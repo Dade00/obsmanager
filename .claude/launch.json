@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "OBSController - WPF App",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run"],
+      "port": 0
+    },
+    {
+      "name": "go2rtc - RTSP/HLS Stream Server",
+      "runtimeExecutable": "./go2rtc",
+      "runtimeArgs": [],
+      "port": 1984
+    }
+  ]
+}

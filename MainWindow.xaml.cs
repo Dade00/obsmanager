@@ -1,135 +1,107 @@
-using Microsoft.Win32;
 using OBSController.Services;
 using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Newtonsoft.Json.Linq;
+using System.IO;
 
 namespace OBSController
 {
     public partial class MainWindow : Window
     {
-        // ─── Servizio OBS ────────────────────────────────────────────────────
         private readonly OBSService _obs = new();
-
-        // ─── Timer anteprima ─────────────────────────────────────────────────
-        private readonly DispatcherTimer _previewTimer;
+        private DispatcherTimer _previewTimer;
+        private DispatcherTimer _vcamStatusTimer;
         private int _previewIntervalMs = 1000;
-
-        // ─── FPS counter ─────────────────────────────────────────────────────
-        private readonly Stopwatch _fpsWatch = new();
-        private int _frameCount = 0;
-
-        // ─── Stato interno ────────────────────────────────────────────────────
         private bool _isConnected = false;
         private bool _isVCamActive = false;
-        private string _selectedImagePath = string.Empty;
 
-        // ─── Ctor ─────────────────────────────────────────────────────────────
         public MainWindow()
         {
             InitializeComponent();
             LoadConfigurationDefaults();
 
-            // Collegamento eventi OBS
-            _obs.Connected    += OnOBSConnected;
-            _obs.Disconnected += OnOBSDisconnected;
-            _obs.SceneChanged += OnSceneChanged;
-            _obs.Error        += (s, msg) => SetStatus($"⚠  {msg}");
-
-            // Timer anteprima
+            // Timer anteprima webcam virtuale
             _previewTimer = new DispatcherTimer
             {
                 Interval = TimeSpan.FromMilliseconds(_previewIntervalMs)
             };
             _previewTimer.Tick += PreviewTimer_Tick;
 
-            // Timer FPS display
-            var fpsDisplayTimer = new DispatcherTimer
+            // Timer controllo stato virtual camera
+            _vcamStatusTimer = new DispatcherTimer
             {
                 Interval = TimeSpan.FromSeconds(1)
             };
-            fpsDisplayTimer.Tick += (s, e) =>
-            {
-                if (_isConnected)
-                {
-                    double fps = _fpsWatch.IsRunning
-                        ? _frameCount / _fpsWatch.Elapsed.TotalSeconds
-                        : 0;
-                    TxtFps.Text = $"{fps:F1} fps";
-                    _frameCount = 0;
-                    _fpsWatch.Restart();
-                }
-            };
-            fpsDisplayTimer.Start();
-            _fpsWatch.Start();
+            _vcamStatusTimer.Tick += VCamStatusTimer_Tick;
 
-            // Timestamp nella status bar
-            var clockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-            clockTimer.Tick += (s, e) =>
-                TxtTimestamp.Text = DateTime.Now.ToString("HH:mm:ss");
-            clockTimer.Start();
+            // Eventi OBS
+            _obs.Connected += OnOBSConnected;
+            _obs.Disconnected += OnOBSDisconnected;
+            _obs.Error += (s, msg) => UpdateStatus("⚠ " + msg);
         }
 
         // ═══════════════════════════════════════════════════════════════════
-        //  CONNESSIONE
+        //  CONFIGURAZIONE
         // ═══════════════════════════════════════════════════════════════════
 
-        private void BtnConnect_Click(object sender, RoutedEventArgs e)
+        private void LoadConfigurationDefaults()
         {
-            if (_isConnected)
+            try
             {
-                _obs.Disconnect();
-                return;
-            }
+                string configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "appsettings.json");
+                if (File.Exists(configPath))
+                {
+                    string json = File.ReadAllText(configPath);
+                    var config = JObject.Parse(json);
 
-            if (!int.TryParse(TxtPort.Text.Trim(), out int port))
+                    // Lettura configurazione automatica al caricamento
+                    string ip = config["OBS"]?["IP"]?.ToString() ?? "localhost";
+                    int port = config["OBS"]?["Port"]?.Value<int>() ?? 4455;
+                    string pwd = config["OBS"]?["Password"]?.ToString() ?? "";
+
+                    // Connessione automatica
+                    ConnectToOBS(ip, port, pwd);
+                }
+            }
+            catch
             {
-                SetStatus("⚠  Porta non valida");
-                return;
+                UpdateStatus("Configurazione non trovata, connessione manuale richiesta");
             }
-
-            string ip  = TxtIP.Text.Trim();
-            string pwd = TxtPassword.Password;
-
-            SetStatus($"Connessione a {ip}:{port}...");
-            BtnConnect.IsEnabled = false;
-            _obs.Connect(ip, port, pwd);
         }
+
+        private void ConnectToOBS(string ip, int port, string password)
+        {
+            try
+            {
+                _obs.Connect(ip, port, password);
+                UpdateStatus("Connessione in corso...");
+            }
+            catch (Exception ex)
+            {
+                UpdateStatus("⚠ Errore connessione: " + ex.Message);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  CONNESSIONE OBS
+        // ═══════════════════════════════════════════════════════════════════
 
         private void OnOBSConnected(object? sender, EventArgs e)
         {
             Dispatcher.Invoke(() =>
             {
                 _isConnected = true;
-
-                // UI connessa
-                BtnConnect.Content    = "Disconnetti";
-                BtnConnect.IsEnabled  = true;
-                BtnVirtualCam.IsEnabled = true;
-                BtnSendImage.IsEnabled = !string.IsNullOrEmpty(_selectedImagePath);
-                StatusDot.Fill        = new SolidColorBrush(Color.FromRgb(0x43, 0xA0, 0x47));
-                StatusDot.Effect      = new System.Windows.Media.Effects.DropShadowEffect
-                {
-                    Color = Color.FromRgb(0x43, 0xA0, 0x47),
-                    BlurRadius = 8, ShadowDepth = 0
-                };
-                PreviewPlaceholder.Visibility = Visibility.Collapsed;
-
-                SetStatus("Connesso a OBS");
-                LoadScenes();
-                RefreshVCamStatus();
-
-                _previewTimer.Interval = TimeSpan.FromMilliseconds(_previewIntervalMs);
+                StatusDot.Fill = new SolidColorBrush(Color.FromRgb(0x43, 0xA0, 0x47));
+                StatusText.Text = "Connesso";
+                UpdateStatus("✓ Connesso a OBS");
                 _previewTimer.Start();
-                _frameCount = 0;
-                _fpsWatch.Restart();
+                _vcamStatusTimer.Start();
+
+                // Avvia la virtual camera automaticamente se configurato
+                AutoStartVirtualCam();
             });
         }
 
@@ -138,23 +110,14 @@ namespace OBSController
             Dispatcher.Invoke(() =>
             {
                 _isConnected = false;
-
-                // UI disconnessa
-                BtnConnect.Content    = "Connetti";
-                BtnConnect.IsEnabled  = true;
-                BtnVirtualCam.IsEnabled = false;
-                BtnSendImage.IsEnabled  = false;
-                StatusDot.Fill        = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
-                StatusDot.Effect      = null;
-                PreviewImage.Source   = null;
+                StatusDot.Fill = new SolidColorBrush(Color.FromRgb(0xcc, 0x33, 0x33));
+                StatusText.Text = "Disconnesso";
+                PreviewImage.Source = null;
                 PreviewPlaceholder.Visibility = Visibility.Visible;
-                TxtCurrentScene.Text  = string.Empty;
-                TxtFps.Text           = "— fps";
-                SceneListBox.ItemsSource = null;
-                SetVCamUI(false);
-
+                UpdateStatus("Disconnesso");
                 _previewTimer.Stop();
-                SetStatus("Disconnesso");
+                _vcamStatusTimer.Stop();
+                UpdateVCamStatus(false);
             });
         }
 
@@ -162,77 +125,93 @@ namespace OBSController
         //  SCENE
         // ═══════════════════════════════════════════════════════════════════
 
-        private void LoadScenes()
-        {
-            try
-            {
-                var scenes       = _obs.GetScenes();
-                var currentScene = _obs.GetCurrentScene();
-
-                SceneListBox.ItemsSource = scenes;
-                SceneListBox.DisplayMemberPath = "Name";
-
-                // Seleziona la scena corrente senza triggherare il cambio
-                SceneListBox.SelectionChanged -= SceneListBox_SelectionChanged;
-                foreach (var item in SceneListBox.Items)
-                {
-                    if (item is OBSWebsocketDotNet.Types.SceneBasicInfo info
-                        && info.Name == currentScene)
-                    {
-                        SceneListBox.SelectedItem = item;
-                        break;
-                    }
-                }
-                SceneListBox.SelectionChanged += SceneListBox_SelectionChanged;
-
-                TxtCurrentScene.Text = currentScene;
-            }
-            catch (Exception ex)
-            {
-                SetStatus($"⚠  Errore caricamento scene: {ex.Message}");
-            }
-        }
-
-        private void SceneListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private void BtnScene_Click(object sender, RoutedEventArgs e)
         {
             if (!_isConnected) return;
-            if (SceneListBox.SelectedItem is not OBSWebsocketDotNet.Types.SceneBasicInfo scene) return;
+
+            var btn = sender as System.Windows.Controls.Button;
+            string sceneName = btn?.Tag as string;
+
+            if (string.IsNullOrEmpty(sceneName)) return;
 
             try
             {
-                _obs.SetScene(scene.Name);
-                TxtCurrentScene.Text = scene.Name;
-                SetStatus($"Scena → {scene.Name}");
+                _obs.SetScene(sceneName);
+                UpdateStatus($"Scena → {sceneName}");
             }
             catch (Exception ex)
             {
-                SetStatus($"⚠  Cambio scena fallito: {ex.Message}");
+                UpdateStatus($"⚠ Errore cambio scena: {ex.Message}");
             }
-        }
-
-        private void OnSceneChanged(object? sender, string sceneName)
-        {
-            Dispatcher.Invoke(() =>
-            {
-                TxtCurrentScene.Text = sceneName;
-
-                // Aggiorna selezione nella listbox senza retriggherare
-                SceneListBox.SelectionChanged -= SceneListBox_SelectionChanged;
-                foreach (var item in SceneListBox.Items)
-                {
-                    if (item is OBSWebsocketDotNet.Types.SceneBasicInfo info
-                        && info.Name == sceneName)
-                    {
-                        SceneListBox.SelectedItem = item;
-                        break;
-                    }
-                }
-                SceneListBox.SelectionChanged += SceneListBox_SelectionChanged;
-            });
         }
 
         // ═══════════════════════════════════════════════════════════════════
-        //  ANTEPRIMA
+        //  CONTROLLO VIRTUAL CAMERA
+        // ═══════════════════════════════════════════════════════════════════
+
+        private void VCamStatusTimer_Tick(object? sender, EventArgs e)
+        {
+            if (!_isConnected) return;
+
+            try
+            {
+                bool isActive = _obs.GetVirtualCamStatus();
+                Dispatcher.Invoke(() => UpdateVCamStatus(isActive));
+            }
+            catch
+            {
+                // Se errore nel controllo, considera spenta
+                Dispatcher.Invoke(() => UpdateVCamStatus(false));
+            }
+        }
+
+        private void UpdateVCamStatus(bool isActive)
+        {
+            _isVCamActive = isActive;
+
+            if (isActive)
+            {
+                VCamStatusDot.Fill = new SolidColorBrush(Color.FromRgb(0x43, 0xA0, 0x47));
+                VCamStatusText.Text = "Webcam Virtuale: Accesa";
+                VCamStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0x43, 0xA0, 0x47));
+                VCamWarning.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                VCamStatusDot.Fill = new SolidColorBrush(Color.FromRgb(0xcc, 0x33, 0x33));
+                VCamStatusText.Text = "Webcam Virtuale: Spenta";
+                VCamStatusText.Foreground = new SolidColorBrush(Color.FromRgb(0xcc, 0x33, 0x33));
+                VCamWarning.Visibility = Visibility.Visible;
+            }
+        }
+
+        private void AutoStartVirtualCam()
+        {
+            try
+            {
+                string configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "appsettings.json");
+                if (File.Exists(configPath))
+                {
+                    string json = File.ReadAllText(configPath);
+                    var config = JObject.Parse(json);
+
+                    bool autoStartVCam = config["Application"]?["AutoStartVirtualCam"]?.Value<bool>() ?? false;
+
+                    if (autoStartVCam && !_isVCamActive)
+                    {
+                        _obs.StartVirtualCam();
+                        UpdateStatus("✓ Webcam virtuale avviata automaticamente");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                UpdateStatus($"⚠ Errore avvio virtual camera: {ex.Message}");
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  ANTEPRIMA WEBCAM VIRTUALE
         // ═══════════════════════════════════════════════════════════════════
 
         private void PreviewTimer_Tick(object? sender, EventArgs e)
@@ -241,8 +220,8 @@ namespace OBSController
 
             try
             {
-                // Screenshot asincrono per non bloccare la UI
-                string? dataUri = _obs.GetScreenshot(null, 1280, 720);
+                // Prendi screenshot della scena corrente (ricorda: è la webcam virtuale)
+                string? dataUri = _obs.GetScreenshot(null, 400, 400);
                 if (dataUri is null) return;
 
                 // Converti data-URI → BitmapImage
@@ -254,219 +233,55 @@ namespace OBSController
                 var bmp = new BitmapImage();
                 using var ms = new MemoryStream(imageBytes);
                 bmp.BeginInit();
-                bmp.StreamSource   = ms;
-                bmp.CacheOption    = BitmapCacheOption.OnLoad;
-                bmp.CreateOptions  = BitmapCreateOptions.None;
+                bmp.StreamSource = ms;
+                bmp.CacheOption = BitmapCacheOption.OnLoad;
+                bmp.CreateOptions = BitmapCreateOptions.None;
                 bmp.EndInit();
-                bmp.Freeze(); // Necessario per cross-thread
+                bmp.Freeze();
 
                 Dispatcher.Invoke(() =>
                 {
-                    PreviewImage.Source           = bmp;
-                    ErrorOverlay.Visibility       = Visibility.Collapsed;
+                    PreviewImage.Source = bmp;
                     PreviewPlaceholder.Visibility = Visibility.Collapsed;
-                    _frameCount++;
                 });
             }
             catch (Exception ex)
             {
                 Dispatcher.Invoke(() =>
                 {
-                    TxtError.Text            = $"Anteprima non disponibile:\n{ex.Message}";
-                    ErrorOverlay.Visibility  = Visibility.Visible;
+                    UpdateStatus($"⚠ Anteprima non disponibile: {ex.Message}");
                 });
             }
         }
 
-        private void CmbRefreshRate_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (CmbRefreshRate.SelectedItem is ComboBoxItem item
-                && item.Tag is string tagStr
-                && int.TryParse(tagStr, out int ms))
-            {
-                _previewIntervalMs = ms;
-                if (_previewTimer.IsEnabled)
-                {
-                    _previewTimer.Stop();
-                    _previewTimer.Interval = TimeSpan.FromMilliseconds(ms);
-                    _previewTimer.Start();
-                }
-            }
-        }
-
         // ═══════════════════════════════════════════════════════════════════
-        //  VIRTUAL CAMERA
+        //  IMPOSTAZIONI
         // ═══════════════════════════════════════════════════════════════════
 
-        private void RefreshVCamStatus()
+        private void BtnSettings_Click(object sender, RoutedEventArgs e)
         {
-            try
-            {
-                bool active = _obs.GetVirtualCamStatus();
-                SetVCamUI(active);
-            }
-            catch
-            {
-                SetVCamUI(false);
-            }
-        }
-
-        private void BtnVirtualCam_Click(object sender, RoutedEventArgs e)
-        {
-            if (!_isConnected) return;
-
-            try
-            {
-                bool nowActive = _obs.ToggleVirtualCam();
-                SetVCamUI(nowActive);
-                SetStatus(nowActive
-                    ? "Virtual Camera avviata"
-                    : "Virtual Camera fermata");
-            }
-            catch (Exception ex)
-            {
-                SetStatus($"⚠  Virtual Camera: {ex.Message}");
-            }
-        }
-
-        private void SetVCamUI(bool active)
-        {
-            _isVCamActive = active;
-
-            if (active)
-            {
-                VCamDot.Fill        = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
-                VCamDot.Effect      = new System.Windows.Media.Effects.DropShadowEffect
-                    { Color = Color.FromRgb(0xE5, 0x39, 0x35), BlurRadius = 8, ShadowDepth = 0 };
-                TxtVCamStatus.Text      = "Attiva";
-                TxtVCamStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
-                BtnVirtualCam.Content   = "⏹  Ferma Virtual Camera";
-            }
-            else
-            {
-                VCamDot.Fill         = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55));
-                VCamDot.Effect       = null;
-                TxtVCamStatus.Text       = "Inattiva";
-                TxtVCamStatus.Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
-                BtnVirtualCam.Content    = "▶  Avvia Virtual Camera";
-            }
-        }
-
-        // ═══════════════════════════════════════════════════════════════════
-        //  INVIA IMMAGINE
-        // ═══════════════════════════════════════════════════════════════════
-
-        private void BtnBrowse_Click(object sender, RoutedEventArgs e)
-        {
-            var dlg = new OpenFileDialog
-            {
-                Title  = "Seleziona immagine da inviare a OBS",
-                Filter = "Immagini (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp)|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp|Tutti i file (*.*)|*.*"
-            };
-
-            if (dlg.ShowDialog() == true)
-            {
-                _selectedImagePath = dlg.FileName;
-                TxtImagePath.Text  = Path.GetFileName(_selectedImagePath);
-                TxtImagePath.ToolTip = _selectedImagePath;
-                TxtImagePath.Foreground = new SolidColorBrush(Colors.White);
-
-                // Thumbnail preview
-                try
-                {
-                    var bmp = new BitmapImage(new Uri(_selectedImagePath));
-                    ThumbImage.Source        = bmp;
-                    ThumbBorder.Visibility   = Visibility.Visible;
-                }
-                catch
-                {
-                    ThumbBorder.Visibility = Visibility.Collapsed;
-                }
-
-                BtnSendImage.IsEnabled = _isConnected;
-                SetStatus($"Immagine selezionata: {Path.GetFileName(_selectedImagePath)}");
-            }
-        }
-
-        private void BtnSendImage_Click(object sender, RoutedEventArgs e)
-        {
-            if (!_isConnected || string.IsNullOrEmpty(_selectedImagePath)) return;
-
-            string sourceName = TxtSourceName.Text.Trim();
-            if (string.IsNullOrEmpty(sourceName))
-            {
-                SetStatus("⚠  Inserisci il nome della sorgente OBS");
-                return;
-            }
-
-            if (!File.Exists(_selectedImagePath))
-            {
-                SetStatus("⚠  File immagine non trovato");
-                return;
-            }
-
-            try
-            {
-                // Verifica esistenza sorgente e avvisa se non esiste
-                if (!_obs.InputExists(sourceName))
-                {
-                    SetStatus($"⚠  Sorgente \"{sourceName}\" non trovata in OBS — creala manualmente come 'image_source'");
-                    return;
-                }
-
-                _obs.SetImageSourcePath(sourceName, _selectedImagePath);
-                SetStatus($"✓  Immagine inviata → {sourceName}");
-            }
-            catch (Exception ex)
-            {
-                SetStatus($"⚠  Invio immagine fallito: {ex.Message}");
-            }
-        }
-
-        // ═══════════════════════════════════════════════════════════════════
-        //  CONFIGURATION
-        // ═══════════════════════════════════════════════════════════════════
-
-        private void LoadConfigurationDefaults()
-        {
-            try
-            {
-                // Prova a leggere appsettings.json
-                string configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "appsettings.json");
-                if (File.Exists(configPath))
-                {
-                    string json = File.ReadAllText(configPath);
-                    var config = JObject.Parse(json);
-
-                    string ip = config["OBS"]?["IP"]?.ToString() ?? "localhost";
-                    int port = config["OBS"]?["Port"]?.Value<int>() ?? 4455;
-                    string pwd = config["OBS"]?["Password"]?.ToString() ?? "";
-
-                    TxtIP.Text = ip;
-                    TxtPort.Text = port.ToString();
-                    TxtPassword.Password = pwd;
-                }
-            }
-            catch
-            {
-                // Se fallisce, usa i default
-                TxtIP.Text = "localhost";
-                TxtPort.Text = "4455";
-            }
+            // Apri finestra impostazioni
+            var settingsWindow = new SettingsWindow();
+            settingsWindow.Owner = this;
+            settingsWindow.ShowDialog();
         }
 
         // ═══════════════════════════════════════════════════════════════════
         //  UTILITY
         // ═══════════════════════════════════════════════════════════════════
 
-        private void SetStatus(string msg)
+        private void UpdateStatus(string msg)
         {
-            Dispatcher.Invoke(() => StatusBar.Text = msg);
+            Dispatcher.Invoke(() =>
+            {
+                StatusText.Text = msg.Length > 50 ? msg.Substring(0, 47) + "..." : msg;
+            });
         }
 
         protected override void OnClosed(EventArgs e)
         {
-            _previewTimer.Stop();
+            _previewTimer?.Stop();
+            _vcamStatusTimer?.Stop();
             _obs.Disconnect();
             base.OnClosed(e);
         }

@@ -108,7 +108,16 @@ namespace OBSController.Services
         /// <summary>Restituisce true se la virtual camera è attiva.</summary>
         public bool GetVirtualCamStatus()
         {
-            return _obs.GetVirtualCamStatus();
+            try
+            {
+                var status = _obs.GetVirtualCamStatus();
+                // La libreria ritorna un VirtualCamStatus enum o similare
+                return status != null && status.ToString() != "Stopped";
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>Avvia la virtual camera.</summary>

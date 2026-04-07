@@ -1,0 +1,103 @@
+<Window  x:Class="OBSController.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Impostazioni" Height="525" Width="600"
+        Background="#0a0a0a" Foreground="#e0e0e0"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+
+    <Grid Margin="20">
+        <StackPanel VerticalAlignment="Top" Margin="0,0,0,20">
+
+            <!-- OBS Settings -->
+            <StackPanel Margin="0,0,0,20">
+                <TextBlock Text="Connessione OBS" FontSize="14" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,12"/>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="150"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Column="0" Grid.Row="0" Text="Indirizzo IP:" VerticalAlignment="Center"/>
+                    <TextBox Name="TxtOBSIP" Grid.Column="1" Grid.Row="0" Text="localhost"
+                             Background="#1a1a1a" Foreground="#e0e0e0" BorderBrush="#333333" Padding="8,6" Height="32"/>
+
+                    <TextBlock Grid.Column="0" Grid.Row="2" Text="Porta:" VerticalAlignment="Center"/>
+                    <TextBox Name="TxtOBSPort" Grid.Column="1" Grid.Row="2" Text="4455"
+                             Background="#1a1a1a" Foreground="#e0e0e0" BorderBrush="#333333" Padding="8,6" Height="32"/>
+
+                    <TextBlock Grid.Column="0" Grid.Row="4" Text="Password:" VerticalAlignment="Center"/>
+                    <PasswordBox Name="TxtOBSPassword" Grid.Column="1" Grid.Row="4"
+                                 Background="#1a1a1a" Foreground="#e0e0e0" BorderBrush="#333333" Padding="8,6" Height="32"/>
+                </Grid>
+            </StackPanel>
+
+            <Separator Background="#222222" Margin="0,0,0,20"/>
+
+            <!-- Camera PTZ Settings -->
+            <StackPanel Margin="0,0,0,20">
+                <TextBlock Text="Camera PTZ" FontSize="14" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,12"/>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="150"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="10"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Column="0" Grid.Row="0" Text="Indirizzo IP:" VerticalAlignment="Center"/>
+                    <TextBox Name="TxtCameraIP" Grid.Column="1" Grid.Row="0" Text="192.168.1.50"
+                             Background="#1a1a1a" Foreground="#e0e0e0" BorderBrush="#333333" Padding="8,6" Height="32"/>
+
+                    <TextBlock Grid.Column="0" Grid.Row="2" Text="URL Stream RTSP:" VerticalAlignment="Center"/>
+                    <TextBox Name="TxtCameraRTSP" Grid.Column="1" Grid.Row="2" Text="rtsp://192.168.1.50/free"
+                             Background="#1a1a1a" Foreground="#e0e0e0" BorderBrush="#333333" Padding="8,6" Height="32"/>
+
+                    <TextBlock Grid.Column="0" Grid.Row="4" Text="Endpoint go2rtc:" VerticalAlignment="Center"/>
+                    <TextBox Name="TxtGo2RTCEndpoint" Grid.Column="1" Grid.Row="4" Text="http://localhost:1984"
+                             Background="#1a1a1a" Foreground="#e0e0e0" BorderBrush="#333333" Padding="8,6" Height="32"/>
+                </Grid>
+            </StackPanel>
+
+            <Separator Background="#222222" Margin="0,0,0,20"/>
+
+            <!-- Other Settings -->
+            <StackPanel Margin="0,0,0,20">
+                <TextBlock Text="Opzioni" FontSize="14" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,10"/>
+
+                <CheckBox Name="ChkAutoConnect" IsChecked="True" Margin="0,0,0,10">
+                    <TextBlock Text="Connetti automaticamente al lancio" Foreground="#e0e0e0"/>
+                </CheckBox>
+
+                <CheckBox Name="ChkVirtualCamAuto" IsChecked="False">
+                    <TextBlock Text="Avvia camera virtuale automaticamente" Foreground="#e0e0e0"/>
+                </CheckBox>
+            </StackPanel>
+
+            <Separator Background="#222222" Margin="0,20"/>
+
+            <!-- Buttons -->
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,0,0">
+                <Button Content="Salva" Click="BtnSave_Click"
+                        Background="#1a7a1a" Foreground="white" Padding="20,8" Cursor="Hand" Margin="0,0,10,0"/>
+                <Button Content="Annulla" Click="BtnCancel_Click"
+                        Background="#222222" Foreground="#e0e0e0" Padding="20,8" Cursor="Hand"/>
+            </StackPanel>
+
+        </StackPanel>
+    </Grid>
+</Window>
