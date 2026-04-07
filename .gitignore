@@ -1,0 +1,38 @@
+# Build results
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+
+# Visual Studio cache/options
+.vs/
+.vscode/
+
+# User-specific files
+*.user
+*.userosscache
+*.sln.docstates
+
+# NuGet
+packages/
+.nuget/
+
+# Local settings (with actual credentials)
+appsettings.local.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+*.nupkg
+*.snupkg
+
+# Test results
+TestResults/
