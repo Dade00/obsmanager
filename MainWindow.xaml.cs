@@ -310,26 +310,29 @@ namespace OBSController
                 int    port = config["OBS"]?["Port"]?.Value<int>() ?? 4455;
                 string pwd  = config["OBS"]?["Password"]?.ToString() ?? "";
 
-                // Salva credenziali subito (usate dal reconnect timer)
-                _lastOBSIp       = ip;
-                _lastOBSPort     = port;
-                _lastOBSPassword = pwd;
+                _lastOBSIp = ip; _lastOBSPort = port; _lastOBSPassword = pwd;
 
-                // Se OBS non è aperto, avvialo e aspetta (async, non blocca UI)
-                if (!IsOBSRunning())
+                // Controlla se il WebSocket OBS è già raggiungibile sulla porta
+                bool wsReady = await Task.Run(() => IsOBSWebSocketReachable(ip, port));
+
+                if (!wsReady)
                 {
+                    // OBS non è in ascolto → avvialo
                     UpdateStatus("⏳ Avvio OBS...");
                     bool started = TryStartOBS();
                     if (started)
                     {
-                        // Aspetta che OBS carichi il WebSocket (max 8s, check ogni 500ms)
-                        UpdateStatus("⏳ Attesa avvio OBS...");
-                        await WaitForOBSReady(timeoutSeconds: 10);
+                        // Aspetta che il WebSocket OBS sia pronto (max 15s)
+                        UpdateStatus("⏳ Attesa WebSocket OBS...");
+                        wsReady = await WaitForOBSWebSocket(ip, port, timeoutSeconds: 15);
+                        if (!wsReady) UpdateStatus("⚠ OBS avviato ma WebSocket non risponde");
                     }
                 }
 
-                // Singolo tentativo di connessione — il ReconnectTimer gestisce i retry
-                TryConnect();
+                if (wsReady || IsOBSRunning())
+                    TryConnect();
+                else
+                    UpdateStatus("⚠ OBS non trovato o non avviato");
             }
             catch (Exception ex)
             {
@@ -338,31 +341,43 @@ namespace OBSController
             }
         }
 
-        /// <summary>Aspetta che OBS sia avviato e il processo esista (non blocca UI).</summary>
-        private async Task WaitForOBSReady(int timeoutSeconds)
+        /// <summary>Verifica se il WebSocket OBS risponde sulla porta specificata (TCP check rapido).</summary>
+        private static bool IsOBSWebSocketReachable(string ip, int port)
         {
-            int elapsed = 0;
-            while (!IsOBSRunning() && elapsed < timeoutSeconds * 1000)
+            try
             {
-                await Task.Delay(500);
-                elapsed += 500;
+                using var tcp = new System.Net.Sockets.TcpClient();
+                var ar = tcp.BeginConnect(ip, port, null, null);
+                bool ok = ar.AsyncWaitHandle.WaitOne(300);
+                if (ok && tcp.Connected) { tcp.EndConnect(ar); return true; }
+                return false;
             }
-            // Piccola pausa extra per dare tempo al WebSocket di inizializzarsi
-            await Task.Delay(1500);
+            catch { return false; }
         }
 
-        /// <summary>Un singolo tentativo di connessione a OBS (non bloccante).</summary>
+        /// <summary>Aspetta fino a 'timeoutSeconds' che il WebSocket OBS sia pronto.</summary>
+        private static async Task<bool> WaitForOBSWebSocket(string ip, int port, int timeoutSeconds)
+        {
+            for (int i = 0; i < timeoutSeconds * 2; i++)
+            {
+                await Task.Delay(500);
+                if (await Task.Run(() => IsOBSWebSocketReachable(ip, port)))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>Tenta una connessione a OBS. Protetto da flag per evitare sovrapposizioni.</summary>
         private void TryConnect()
         {
             if (_isConnected || _connectionPending) return;
 
             _connectionPending = true;
-            UpdateStatus($"⏳ Connessione a OBS ({_lastOBSIp}:{_lastOBSPort})...");
+            UpdateStatus($"⏳ Connessione OBS ({_lastOBSIp}:{_lastOBSPort})...");
 
             try
             {
                 _obs.Connect(_lastOBSIp, _lastOBSPort, _lastOBSPassword);
-                // La connessione è asincrona: OnOBSConnected scatterà quando pronta
             }
             catch (Exception ex)
             {
@@ -370,14 +385,17 @@ namespace OBSController
                 _connectionPending = false;
                 UpdateStatus("⚠ OBS non raggiungibile");
             }
+
+            // Safety: se dopo 8s non arriva né Connected né Disconnected, sblocca il flag
+            Task.Delay(8000).ContinueWith(_ =>
+            {
+                if (!_isConnected) _connectionPending = false;
+            });
         }
 
         private void ReconnectTimer_Tick(object? sender, EventArgs e)
         {
-            // Salta se già connesso o se c'è già un tentativo in corso
             if (_isConnected || _connectionPending) return;
-
-            System.Diagnostics.Debug.WriteLine("[ReconnectTimer] Tentativo riconnessione...");
             TryConnect();
         }
 
@@ -661,16 +679,10 @@ namespace OBSController
             });
         }
 
-        /// <summary>Controlla se OBS Studio è in esecuzione (obs64.exe).</summary>
-        private bool IsOBSRunning()
+        /// <summary>Controlla se OBS Studio è in esecuzione (processo obs64 o obs).</summary>
+        private static bool IsOBSRunning()
         {
-            try
-            {
-                // Controlla SOLO obs64 (il vero eseguibile di OBS Studio 64-bit)
-                // Evita falsi positivi da processi "obs" generici o helper
-                var procs = Process.GetProcessesByName("obs64");
-                return procs.Length > 0 && procs.Any(p => !p.HasExited);
-            }
+            try { return Process.GetProcessesByName("obs64").Length > 0 || Process.GetProcessesByName("obs").Length > 0; }
             catch { return false; }
         }
 
