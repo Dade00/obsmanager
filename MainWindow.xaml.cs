@@ -39,6 +39,7 @@ namespace OBSController
 
         // ─── FlashCap (preview Virtual Camera) ────────────────────────────────
         private CaptureDevice? _captureDevice;
+        private FlashCap.VideoCharacteristics? _captureChar; // formato/dimensione del dispositivo
         private DateTime _lastPreviewFrame = DateTime.MinValue;
         private const int PREVIEW_INTERVAL_MS = 50; // max ~20fps
 
@@ -85,16 +86,15 @@ namespace OBSController
         //  PREVIEW — FlashCap (Virtual Camera OBS → Image WPF, ~20fps)
         // ═══════════════════════════════════════════════════════════════════
 
-        private async void StartVlcPreview()   // nome mantenuto per non cambiare i call-site
+        private async void StartVlcPreview()
         {
             if (_captureDevice != null) return;
 
             try
             {
-                // Enumera i dispositivi DirectShow (sync)
                 var descriptors = new CaptureDevices().EnumerateDescriptors().ToList();
 
-                // Cerca la Virtual Camera di OBS
+                // Cerca OBS Virtual Camera
                 var obsDevice = descriptors.FirstOrDefault(d =>
                     d.Name.Contains("OBS", StringComparison.OrdinalIgnoreCase) &&
                     d.Name.Contains("Virtual", StringComparison.OrdinalIgnoreCase))
@@ -103,29 +103,20 @@ namespace OBSController
 
                 if (obsDevice == null || obsDevice.Characteristics.Length == 0)
                 {
-                    // Log per debug
-                    System.Diagnostics.Debug.WriteLine("[Preview] OBS Virtual Camera non trovata. Dispositivi disponibili:");
+                    System.Diagnostics.Debug.WriteLine("[Preview] OBS Virtual Camera non trovata. Dispositivi:");
                     foreach (var d in descriptors)
-                        System.Diagnostics.Debug.WriteLine($"  - {d.Name}");
+                        System.Diagnostics.Debug.WriteLine($"  - [{d.Name}]");
                     return;
                 }
 
-                System.Diagnostics.Debug.WriteLine($"[Preview] Trovata: {obsDevice.Name}");
-
-                // Preferisci MJPEG (JPEG diretto, decodifica rapida), poi qualsiasi formato
+                // Prendi la risoluzione più bassa disponibile per leggerezza (la preview è piccola)
                 var characteristic = obsDevice.Characteristics
-                    .Where(c => c.PixelFormat == FlashCap.PixelFormats.JPEG)
-                    .OrderByDescending(c => c.Width)
-                    .FirstOrDefault()
-                    ?? obsDevice.Characteristics
-                    .OrderByDescending(c => c.Width)
-                    .FirstOrDefault();
+                    .OrderBy(c => c.Width)
+                    .FirstOrDefault() ?? obsDevice.Characteristics[0];
 
-                if (characteristic == null) return;
+                System.Diagnostics.Debug.WriteLine($"[Preview] {obsDevice.Name} → {characteristic.Width}x{characteristic.Height} {characteristic.PixelFormat}");
 
-                System.Diagnostics.Debug.WriteLine($"[Preview] {characteristic.Width}x{characteristic.Height} {characteristic.PixelFormat} @{characteristic.FramesPerSecond}fps");
-
-                // Apri dispositivo con callback async per i frame
+                _captureChar = characteristic;
                 _captureDevice = await obsDevice.OpenAsync(characteristic, OnFrameArrived);
                 await _captureDevice.StartAsync();
 
@@ -135,45 +126,142 @@ namespace OBSController
                     PreviewPlaceholder.Visibility = Visibility.Collapsed;
                     VCamOffPlaceholder.Visibility = Visibility.Collapsed;
                 });
-
-                System.Diagnostics.Debug.WriteLine("[Preview] Cattura avviata");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[Preview Error] {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[Preview Error] {ex.GetType().Name}: {ex.Message}");
             }
         }
 
         private async Task OnFrameArrived(PixelBufferScope bufferScope)
         {
-            // Throttle a ~20fps per non sovraccaricare il thread di rendering WPF
             var now = DateTime.UtcNow;
             if ((now - _lastPreviewFrame).TotalMilliseconds < PREVIEW_INTERVAL_MS) return;
             _lastPreviewFrame = now;
 
             try
             {
-                // CopyImage() è sincrono — restituisce i byte nel formato del dispositivo
-                byte[] imageData = bufferScope.Buffer.CopyImage();
+                byte[] data = bufferScope.Buffer.CopyImage();
+                if (data.Length < 4) return;
 
-                // Crea BitmapImage (frozen = thread-safe per WPF)
-                var bmp = new BitmapImage();
-                bmp.BeginInit();
-                bmp.CacheOption = BitmapCacheOption.OnLoad;
-                bmp.StreamSource = new MemoryStream(imageData);
-                bmp.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
-                bmp.EndInit();
-                bmp.Freeze();
+                var fmt = _captureChar?.PixelFormat ?? FlashCap.PixelFormats.Unknown;
+                int w = _captureChar?.Width ?? 0;
+                int h = _captureChar?.Height ?? 0;
 
-                await Dispatcher.InvokeAsync(() =>
+                BitmapSource? bmp = null;
+
+                if (fmt == FlashCap.PixelFormats.JPEG || (data[0] == 0xFF && data[1] == 0xD8))
                 {
-                    PreviewImage.Source = bmp;
-                }, System.Windows.Threading.DispatcherPriority.Render);
+                    // JPEG: decodifica diretta
+                    var bi = new BitmapImage();
+                    bi.BeginInit();
+                    bi.CacheOption = BitmapCacheOption.OnLoad;
+                    bi.StreamSource = new MemoryStream(data);
+                    bi.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+                    bi.EndInit();
+                    bi.Freeze();
+                    bmp = bi;
+                }
+                else if (fmt == FlashCap.PixelFormats.NV12 && w > 0 && h > 0)
+                {
+                    bmp = NV12ToBitmapSource(data, w, h);
+                }
+                else if ((fmt == FlashCap.PixelFormats.YUYV || fmt == FlashCap.PixelFormats.UYVY) && w > 0 && h > 0)
+                {
+                    bmp = YUY2ToBitmapSource(data, w, h, fmt == FlashCap.PixelFormats.UYVY);
+                }
+                else if (w > 0 && h > 0)
+                {
+                    // Tentativo generico: prova come JPEG, poi come RGB24
+                    try
+                    {
+                        var bi = new BitmapImage();
+                        bi.BeginInit();
+                        bi.CacheOption = BitmapCacheOption.OnLoad;
+                        bi.StreamSource = new MemoryStream(data);
+                        bi.EndInit();
+                        bi.Freeze();
+                        bmp = bi;
+                    }
+                    catch
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[Frame] Formato sconosciuto: {fmt}, {data.Length} bytes");
+                    }
+                }
+
+                if (bmp == null) return;
+
+                await Dispatcher.InvokeAsync(() => PreviewImage.Source = bmp,
+                    System.Windows.Threading.DispatcherPriority.Render);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[Frame] {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[Frame Error] {ex.Message}");
             }
+        }
+
+        /// <summary>Converte NV12 (YUV 4:2:0 semi-planar) in Bgra32 per WPF.</summary>
+        private static BitmapSource NV12ToBitmapSource(byte[] data, int w, int h)
+        {
+            int ySize = w * h;
+            var px = new byte[ySize * 4];
+
+            for (int y = 0; y < h; y++)
+            {
+                int uvBase = ySize + (y >> 1) * w;
+                int rowOff = y * w;
+                for (int x = 0; x < w; x++)
+                {
+                    int yv = data[rowOff + x];
+                    int uvOff = uvBase + (x & ~1);
+                    int u = data[uvOff] - 128;
+                    int v = data[uvOff + 1] - 128;
+
+                    int r = Math.Clamp((int)(yv + 1.402f * v),        0, 255);
+                    int g = Math.Clamp((int)(yv - 0.344f * u - 0.714f * v), 0, 255);
+                    int b = Math.Clamp((int)(yv + 1.772f * u),        0, 255);
+
+                    int i = (rowOff + x) * 4;
+                    px[i] = (byte)b; px[i+1] = (byte)g; px[i+2] = (byte)r; px[i+3] = 255;
+                }
+            }
+
+            var bmp = BitmapSource.Create(w, h, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null, px, w * 4);
+            bmp.Freeze();
+            return bmp;
+        }
+
+        /// <summary>Converte YUY2/UYVY (YUV 4:2:2 packed) in Bgra32 per WPF.</summary>
+        private static BitmapSource YUY2ToBitmapSource(byte[] data, int w, int h, bool isUYVY)
+        {
+            var px = new byte[w * h * 4];
+
+            for (int y = 0; y < h; y++)
+            {
+                int rowSrc = y * w * 2;
+                int rowDst = y * w * 4;
+                for (int x = 0; x < w; x += 2)
+                {
+                    int s = rowSrc + x * 2;
+                    int y0, u, y1, v;
+                    if (isUYVY) { u = data[s]-128; y0 = data[s+1]; v = data[s+2]-128; y1 = data[s+3]; }
+                    else        { y0 = data[s]; u = data[s+1]-128; y1 = data[s+2]; v = data[s+3]-128; }
+
+                    for (int p = 0; p < 2; p++)
+                    {
+                        int yv = (p == 0) ? y0 : y1;
+                        int r = Math.Clamp((int)(yv + 1.402f * v),             0, 255);
+                        int g = Math.Clamp((int)(yv - 0.344f * u - 0.714f * v), 0, 255);
+                        int b = Math.Clamp((int)(yv + 1.772f * u),             0, 255);
+                        int i = rowDst + (x + p) * 4;
+                        px[i] = (byte)b; px[i+1] = (byte)g; px[i+2] = (byte)r; px[i+3] = 255;
+                    }
+                }
+            }
+
+            var bmp = BitmapSource.Create(w, h, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null, px, w * 4);
+            bmp.Freeze();
+            return bmp;
         }
 
         private async void StopVlcPreview()   // nome mantenuto per non cambiare tutti i call-site
@@ -327,8 +415,7 @@ namespace OBSController
                             try
                             {
                                 // Cerca sia "obs64" che "obs"
-                                var obsProcess = Process.GetProcessesByName("obs64").FirstOrDefault()
-                                              ?? Process.GetProcessesByName("obs").FirstOrDefault();
+                                var obsProcess = Process.GetProcessesByName("obs64").FirstOrDefault();
                                 if (obsProcess != null && obsProcess.MainWindowHandle != IntPtr.Zero)
                                 {
                                     ShowWindow(obsProcess.MainWindowHandle, SW_MINIMIZE);
@@ -574,13 +661,15 @@ namespace OBSController
             });
         }
 
-        /// <summary>Controlla se OBS è in esecuzione (processo si chiama obs64 o obs).</summary>
+        /// <summary>Controlla se OBS Studio è in esecuzione (obs64.exe).</summary>
         private bool IsOBSRunning()
         {
             try
             {
-                return Process.GetProcessesByName("obs64").Length > 0
-                    || Process.GetProcessesByName("obs").Length > 0;
+                // Controlla SOLO obs64 (il vero eseguibile di OBS Studio 64-bit)
+                // Evita falsi positivi da processi "obs" generici o helper
+                var procs = Process.GetProcessesByName("obs64");
+                return procs.Length > 0 && procs.Any(p => !p.HasExited);
             }
             catch { return false; }
         }
