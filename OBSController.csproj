@@ -6,10 +6,11 @@
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <!-- Icona dell'applicazione - rimuovere se non disponibile -->
-    <!-- <ApplicationIcon>obs_icon.ico</ApplicationIcon> -->
     <AssemblyName>OBSController</AssemblyName>
     <RootNamespace>OBSController</RootNamespace>
+    <Version>0.1.0</Version>
+    <FileVersion>0.1.0.0</FileVersion>
+    <ProductVersion>0.1.0</ProductVersion>
   </PropertyGroup>
 
   <ItemGroup>

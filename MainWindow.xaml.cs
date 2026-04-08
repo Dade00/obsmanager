@@ -38,6 +38,10 @@ namespace OBSController
         public MainWindow()
         {
             InitializeComponent();
+
+            // Verifica aggiornamenti all'avvio
+            _ = CheckForUpdatesAsync();
+
             LoadConfigurationDefaults();
 
             // Timer anteprima webcam virtuale
@@ -624,6 +628,48 @@ namespace OBSController
                 _lastActivityTime = DateTime.Now;
                 StatusText.Text = msg.Length > 50 ? msg.Substring(0, 47) + "..." : msg;
             });
+        }
+
+        private async Task CheckForUpdatesAsync()
+        {
+            try
+            {
+                // Versione corrente dell'app
+                string currentVersion = System.Reflection.Assembly.GetExecutingAssembly()
+                    .GetName().Version?.ToString() ?? "0.1.0.0";
+
+                // Verifica la versione più recente su GitHub API
+                using (var client = new System.Net.Http.HttpClient())
+                {
+                    client.DefaultRequestHeaders.Add("User-Agent", "OBSController");
+                    string apiUrl = "https://api.github.com/repos/Dade00/khmanager/releases/latest";
+
+                    var response = await client.GetAsync(apiUrl);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        string json = await response.Content.ReadAsStringAsync();
+                        var release = JObject.Parse(json);
+                        string latestVersion = release["tag_name"]?.ToString().TrimStart('v') ?? "0.1.0";
+
+                        if (IsNewerVersion(latestVersion, currentVersion))
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[Update] Nuova versione disponibile: {latestVersion}");
+                            UpdateStatus($"⬆ Nuova versione disponibile: {latestVersion}. Scarica da GitHub!");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Update Check] {ex.Message}");
+            }
+        }
+
+        private bool IsNewerVersion(string latestVersion, string currentVersion)
+        {
+            var latest = new System.Version(latestVersion);
+            var current = new System.Version(currentVersion);
+            return latest > current;
         }
 
         protected override void OnClosed(EventArgs e)

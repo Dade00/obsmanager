@@ -1,9 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch",
-      "WebFetch(domain:www.nuget.org)",
-      "mcp__Claude_Preview__preview_start"
+      "Bash(ls -la *.sln)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git reset:*)",
+      "Bash(dotnet add:*)",
+      "Bash(dotnet clean:*)",
+      "Bash(dotnet build:*)",
+      "Bash(dotnet remove:*)",
+      "Bash(dotnet publish:*)"
     ]
   }
 }
