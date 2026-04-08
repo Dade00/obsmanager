@@ -11,6 +11,7 @@ using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Linq;
+using LibVLCSharp.Shared;
 
 namespace OBSController
 {
@@ -22,18 +23,25 @@ namespace OBSController
         private const int SW_MINIMIZE = 6;
 
         private readonly OBSService _obs = new();
-        private DispatcherTimer _previewTimer;
+
+        // ─── Timers ────────────────────────────────────────────────────────────
+        private DispatcherTimer _fallbackPreviewTimer;  // screenshot 1fps quando VCam è spenta
         private DispatcherTimer _vcamStatusTimer;
         private DispatcherTimer _healthCheckTimer;
-        private DispatcherTimer _reconnectTimer; // Timer per riconnessione automatica
-        private int _previewIntervalMs = 40; // 25 FPS per fluidità video
+        private DispatcherTimer _reconnectTimer;
+
+        // ─── Stato ────────────────────────────────────────────────────────────
         private bool _isConnected = false;
         private bool _isVCamActive = false;
         private DateTime _lastActivityTime = DateTime.Now;
-        private const int FREEZE_TIMEOUT_MS = 5000; // 5 secondi prima di considerare l'app freezata
         private string _lastOBSIp = "localhost";
         private int _lastOBSPort = 4455;
         private string _lastOBSPassword = "";
+
+        // ─── LibVLC ────────────────────────────────────────────────────────────
+        private LibVLC? _libVlc;
+        private LibVLCSharp.Shared.MediaPlayer? _mediaPlayer;
+        private bool _vlcPreviewActive = false;
 
         public MainWindow()
         {
@@ -42,14 +50,12 @@ namespace OBSController
             // Verifica aggiornamenti all'avvio
             _ = CheckForUpdatesAsync();
 
-            LoadConfigurationDefaults();
-
-            // Timer anteprima webcam virtuale
-            _previewTimer = new DispatcherTimer
+            // Timer screenshot fallback (1fps quando VCam è spenta)
+            _fallbackPreviewTimer = new DispatcherTimer
             {
-                Interval = TimeSpan.FromMilliseconds(_previewIntervalMs)
+                Interval = TimeSpan.FromMilliseconds(1000) // 1 fps - basta per monitorare la scena
             };
-            _previewTimer.Tick += PreviewTimer_Tick;
+            _fallbackPreviewTimer.Tick += FallbackPreviewTimer_Tick;
 
             // Timer controllo stato virtual camera
             _vcamStatusTimer = new DispatcherTimer
@@ -58,7 +64,7 @@ namespace OBSController
             };
             _vcamStatusTimer.Tick += VCamStatusTimer_Tick;
 
-            // Timer controllo health dell'app (freezata)
+            // Timer health check (monitor processi/rete)
             _healthCheckTimer = new DispatcherTimer
             {
                 Interval = TimeSpan.FromSeconds(2)
@@ -69,16 +75,168 @@ namespace OBSController
             // Timer riconnessione automatica a OBS
             _reconnectTimer = new DispatcherTimer
             {
-                Interval = TimeSpan.FromSeconds(5) // Prova ogni 5 secondi se disconnesso
+                Interval = TimeSpan.FromSeconds(5)
             };
             _reconnectTimer.Tick += ReconnectTimer_Tick;
             _reconnectTimer.Start();
+
+            // Inizializza LibVLC dopo il caricamento della finestra
+            Loaded += MainWindow_Loaded;
 
             // Eventi OBS
             _obs.Connected += OnOBSConnected;
             _obs.Disconnected += OnOBSDisconnected;
             _obs.Error += (s, msg) => UpdateStatus("⚠ " + msg);
-            _obs.Debug += (s, msg) => System.Diagnostics.Debug.WriteLine(msg);  // Log nella finestra Output
+            _obs.Debug += (s, msg) => System.Diagnostics.Debug.WriteLine(msg);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  INIT LIBVLC
+        // ═══════════════════════════════════════════════════════════════════
+
+        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // Inizializza LibVLC (usa i binari del pacchetto NuGet VideoLAN.LibVLC.Windows)
+                _libVlc = new LibVLC(enableDebugLogs: false);
+                _mediaPlayer = new LibVLCSharp.Shared.MediaPlayer(_libVlc);
+
+                // Collega il MediaPlayer al VideoView WPF
+                VlcVideoView.MediaPlayer = _mediaPlayer;
+
+                System.Diagnostics.Debug.WriteLine("[VLC] LibVLC inizializzato correttamente");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[VLC Init Error] {ex.Message}");
+                // Se VLC non disponibile, funzionerà solo con fallback screenshot
+            }
+
+            // Avvia la configurazione dopo l'init VLC
+            LoadConfigurationDefaults();
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  PREVIEW VLC (Virtual Camera attiva → 30fps fluido)
+        // ═══════════════════════════════════════════════════════════════════
+
+        private void StartVlcPreview()
+        {
+            if (_vlcPreviewActive) return;
+            if (_mediaPlayer == null || _libVlc == null) return;
+
+            try
+            {
+                // Ferma il fallback screenshot
+                _fallbackPreviewTimer.Stop();
+
+                // Apri la Virtual Camera OBS tramite DirectShow
+                var media = new Media(_libVlc, "dshow://", FromType.FromLocation);
+                media.AddOption(":dshow-vdev=OBS Virtual Camera");
+                media.AddOption(":dshow-adev=none");        // nessun audio
+                media.AddOption(":live-caching=50");        // latenza minima (50ms)
+                media.AddOption(":clock-jitter=0");
+                media.AddOption(":clock-synchro=0");
+
+                _mediaPlayer.Play(media);
+                _vlcPreviewActive = true;
+
+                // Mostra VideoView, nascondi gli altri
+                VlcVideoView.Visibility = Visibility.Visible;
+                PreviewImage.Visibility = Visibility.Collapsed;
+                PreviewPlaceholder.Visibility = Visibility.Collapsed;
+
+                System.Diagnostics.Debug.WriteLine("[VLC] Preview avviato su OBS Virtual Camera");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[VLC Preview Error] {ex.Message}");
+                // Fallback agli screenshot se VLC fallisce
+                StartFallbackPreview();
+            }
+        }
+
+        private void StopVlcPreview()
+        {
+            if (!_vlcPreviewActive) return;
+
+            try
+            {
+                _mediaPlayer?.Stop();
+                _vlcPreviewActive = false;
+
+                VlcVideoView.Visibility = Visibility.Collapsed;
+
+                System.Diagnostics.Debug.WriteLine("[VLC] Preview fermato");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[VLC Stop Error] {ex.Message}");
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  PREVIEW FALLBACK (Virtual Camera spenta → screenshot 1fps)
+        // ═══════════════════════════════════════════════════════════════════
+
+        private void StartFallbackPreview()
+        {
+            if (!_isConnected) return;
+
+            // Mostra Image fallback, nascondi VLC e placeholder
+            PreviewImage.Visibility = Visibility.Visible;
+            VlcVideoView.Visibility = Visibility.Collapsed;
+            PreviewPlaceholder.Visibility = Visibility.Collapsed;
+
+            _fallbackPreviewTimer.Start();
+        }
+
+        private void StopFallbackPreview()
+        {
+            _fallbackPreviewTimer.Stop();
+            PreviewImage.Visibility = Visibility.Collapsed;
+            PreviewImage.Source = null;
+        }
+
+        private void FallbackPreviewTimer_Tick(object? sender, EventArgs e)
+        {
+            if (!_isConnected) return;
+
+            // Screenshot a 1fps in background - non blocca l'UI
+            Task.Run(() =>
+            {
+                try
+                {
+                    string? dataUri = _obs.GetScreenshot(null, 410, 230);
+                    if (dataUri is null) return;
+
+                    string base64 = dataUri.Contains(",")
+                        ? dataUri[(dataUri.IndexOf(',') + 1)..]
+                        : dataUri;
+
+                    byte[] imageBytes = Convert.FromBase64String(base64);
+                    var bmp = new BitmapImage();
+                    bmp.BeginInit();
+                    bmp.StreamSource = new MemoryStream(imageBytes);
+                    bmp.CacheOption = BitmapCacheOption.OnLoad;
+                    bmp.CreateOptions = BitmapCreateOptions.None;
+                    bmp.EndInit();
+                    bmp.Freeze();
+
+                    Dispatcher.Invoke(() =>
+                    {
+                        if (!_vlcPreviewActive) // Solo se VLC non è attivo
+                        {
+                            PreviewImage.Source = bmp;
+                        }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[Fallback Preview] {ex.Message}");
+                }
+            });
         }
 
         // ═══════════════════════════════════════════════════════════════════
@@ -98,21 +256,18 @@ namespace OBSController
                     string json = File.ReadAllText(configPath);
                     var config = JObject.Parse(json);
 
-                    // Lettura configurazione automatica al caricamento
                     string ip = config["OBS"]?["IP"]?.ToString() ?? "localhost";
                     int port = config["OBS"]?["Port"]?.Value<int>() ?? 4455;
                     string pwd = config["OBS"]?["Password"]?.ToString() ?? "";
 
                     System.Diagnostics.Debug.WriteLine($"[LoadConfig] Config: {ip}:{port}");
 
-                    // Verifica se OBS è già in esecuzione
                     if (!IsProcessRunning("obs"))
                     {
                         System.Diagnostics.Debug.WriteLine("[LoadConfig] OBS non trovato, avvio automatico...");
                         UpdateStatus("OBS non trovato, avvio in background...");
                         if (TryStartOBS())
                         {
-                            // Aspetta che OBS si avvii (4 secondi), poi connetti con retry
                             Task.Delay(4000).ContinueWith(_ =>
                             {
                                 Dispatcher.Invoke(() =>
@@ -121,11 +276,10 @@ namespace OBSController
                                     TryConnectWithRetry(ip, port, pwd, maxRetries: 5, delayMs: 800);
                                 });
                             });
-                            return; // Esce senza connettere subito
+                            return;
                         }
                     }
 
-                    // Connessione automatica (se OBS è già in esecuzione)
                     ConnectToOBS(ip, port, pwd);
                 }
                 else
@@ -163,14 +317,12 @@ namespace OBSController
                 }
             }
 
-            // Se tutti i tentativi falliscono
             System.Diagnostics.Debug.WriteLine("[TryConnect] ✗ Connessione fallita dopo tutti i tentativi");
             UpdateStatus("❌ Impossibile connettersi a OBS");
         }
 
         private void ConnectToOBS(string ip, int port, string password)
         {
-            // Salva le credenziali per riconnessioni automatiche
             _lastOBSIp = ip;
             _lastOBSPort = port;
             _lastOBSPassword = password;
@@ -186,18 +338,13 @@ namespace OBSController
                 UpdateStatus($"⚠ OBS non raggiungibile, tentativo avvio...");
                 System.Diagnostics.Debug.WriteLine($"[OBS Connect Error] {ex}");
 
-                // Prova ad avviare OBS se non è aperto
                 if (TryStartOBS())
                 {
-                    // Riprova la connessione dopo 4 secondi
                     Task.Delay(4000).ContinueWith(_ =>
                     {
                         Dispatcher.Invoke(() =>
                         {
-                            try
-                            {
-                                _obs.Connect(ip, port, password);
-                            }
+                            try { _obs.Connect(ip, port, password); }
                             catch { }
                         });
                     });
@@ -207,7 +354,6 @@ namespace OBSController
 
         private void ReconnectTimer_Tick(object? sender, EventArgs e)
         {
-            // Se disconnesso, prova a riconnettersi
             if (!_isConnected)
             {
                 System.Diagnostics.Debug.WriteLine("[ReconnectTimer] Tentativo riconnessione...");
@@ -227,10 +373,9 @@ namespace OBSController
         {
             try
             {
-                // Percorsi comuni di OBS - ordine di preferenza
                 string[] obsPaths = new[]
                 {
-                    "C:\\Program Files\\obs-studio\\bin\\64bit\\obs64.exe", // 64-bit (nome corretto)
+                    "C:\\Program Files\\obs-studio\\bin\\64bit\\obs64.exe",
                     "C:\\Program Files\\obs-studio\\bin\\64bit\\obs.exe",
                     "C:\\Program Files (x86)\\obs-studio\\bin\\32bit\\obs.exe",
                     "C:\\Program Files\\obs-studio\\obs64.exe",
@@ -253,7 +398,6 @@ namespace OBSController
                         System.Diagnostics.Debug.WriteLine("[TryStartOBS] OBS avviato");
                         UpdateStatus("🔄 Avvio OBS in background...");
 
-                        // Minimizza subito (entro 1 secondo)
                         Task.Delay(800).ContinueWith(_ =>
                         {
                             try
@@ -296,7 +440,8 @@ namespace OBSController
                 StatusDot.Fill = new SolidColorBrush(Color.FromRgb(0x43, 0xA0, 0x47));
                 StatusText.Text = "Connesso";
                 UpdateStatus("✓ Connesso a OBS");
-                _previewTimer.Start();
+
+                // Avvia il check VCam (gestirà lui il preview corretto)
                 _vcamStatusTimer.Start();
 
                 // Avvia la virtual camera automaticamente se configurato
@@ -311,10 +456,15 @@ namespace OBSController
                 _isConnected = false;
                 StatusDot.Fill = new SolidColorBrush(Color.FromRgb(0xcc, 0x33, 0x33));
                 StatusText.Text = "Disconnesso";
-                PreviewImage.Source = null;
-                PreviewPlaceholder.Visibility = Visibility.Visible;
                 UpdateStatus("Disconnesso");
-                _previewTimer.Stop();
+
+                // Ferma tutti i preview
+                StopVlcPreview();
+                StopFallbackPreview();
+
+                // Mostra placeholder
+                PreviewPlaceholder.Visibility = Visibility.Visible;
+
                 _vcamStatusTimer.Stop();
                 UpdateVCamStatus(false);
             });
@@ -353,22 +503,48 @@ namespace OBSController
         {
             if (!_isConnected) return;
 
-            try
+            Task.Run(() =>
             {
-                bool isActive = _obs.GetVirtualCamStatus();
-                Dispatcher.Invoke(() => UpdateVCamStatus(isActive));
-            }
-            catch
-            {
-                // Se errore nel controllo, considera spenta
-                Dispatcher.Invoke(() => UpdateVCamStatus(false));
-            }
+                try
+                {
+                    bool isActive = _obs.GetVirtualCamStatus();
+                    Dispatcher.Invoke(() => UpdateVCamStatus(isActive));
+                }
+                catch
+                {
+                    Dispatcher.Invoke(() => UpdateVCamStatus(false));
+                }
+            });
         }
 
         private void UpdateVCamStatus(bool isActive)
         {
+            bool wasActive = _isVCamActive;
             _isVCamActive = isActive;
 
+            // Gestisci cambio stato preview
+            if (isActive && !wasActive)
+            {
+                // VCam appena attivata → avvia VLC (smooth 30fps)
+                StopFallbackPreview();
+                StartVlcPreview();
+            }
+            else if (!isActive && wasActive)
+            {
+                // VCam appena spenta → passa a fallback screenshot 1fps
+                StopVlcPreview();
+                if (_isConnected)
+                    StartFallbackPreview();
+                else
+                    PreviewPlaceholder.Visibility = Visibility.Visible;
+            }
+            else if (!isActive && _isConnected && !_fallbackPreviewTimer.IsEnabled && !_vlcPreviewActive)
+            {
+                // VCam spenta al primo check dopo connessione → avvia fallback
+                StartFallbackPreview();
+            }
+
+            // Aggiorna UI VCam
             if (isActive)
             {
                 VCamStatusDot.Fill = new SolidColorBrush(Color.FromRgb(0x43, 0xA0, 0x47));
@@ -415,61 +591,12 @@ namespace OBSController
         }
 
         // ═══════════════════════════════════════════════════════════════════
-        //  ANTEPRIMA WEBCAM VIRTUALE
-        // ═══════════════════════════════════════════════════════════════════
-
-        private void PreviewTimer_Tick(object? sender, EventArgs e)
-        {
-            if (!_isConnected) return;
-
-            // Esegui il caricamento in thread separato per non bloccare l'UI
-            Task.Run(() =>
-            {
-                try
-                {
-                    // Prendi screenshot con lo stesso aspect ratio della preview (16:9)
-                    string? dataUri = _obs.GetScreenshot(null, 410, 230);
-                    if (dataUri is null) return;
-
-                    // Converti data-URI → BitmapImage in background thread
-                    string base64 = dataUri.Contains(",")
-                        ? dataUri[(dataUri.IndexOf(',') + 1)..]
-                        : dataUri;
-
-                    byte[] imageBytes = Convert.FromBase64String(base64);
-                    var bmp = new BitmapImage();
-                    bmp.BeginInit();
-                    bmp.StreamSource = new MemoryStream(imageBytes);
-                    bmp.CacheOption = BitmapCacheOption.OnLoad;
-                    bmp.CreateOptions = BitmapCreateOptions.None;
-                    bmp.EndInit();
-                    bmp.Freeze();
-
-                    // Aggiorna UI nel thread principale
-                    Dispatcher.Invoke(() =>
-                    {
-                        PreviewImage.Source = bmp;
-                        PreviewPlaceholder.Visibility = Visibility.Collapsed;
-                    });
-                }
-                catch (Exception ex)
-                {
-                    Dispatcher.Invoke(() =>
-                    {
-                        UpdateStatus($"⚠ Preview: {ex.Message}");
-                    });
-                }
-            });
-        }
-
-        // ═══════════════════════════════════════════════════════════════════
         //  IMPOSTAZIONI
         // ═══════════════════════════════════════════════════════════════════
 
         private void BtnSettings_Click(object sender, RoutedEventArgs e)
         {
             _lastActivityTime = DateTime.Now;
-            // Apri finestra impostazioni
             var settingsWindow = new SettingsWindow();
             settingsWindow.Owner = this;
             settingsWindow.ShowDialog();
@@ -478,7 +605,7 @@ namespace OBSController
         // ─── Toggle Virtual Camera ───────────────────────────────────
         private void BtnToggleVCam_Click(object sender, RoutedEventArgs e)
         {
-            if (!_isConnected) 
+            if (!_isConnected)
             {
                 UpdateStatus("⚠ Non connesso a OBS");
                 return;
@@ -498,11 +625,7 @@ namespace OBSController
         }
 
         // ═══════════════════════════════════════════════════════════════════
-        //  UTILITY
-        // ═══════════════════════════════════════════════════════════════════
-
-        // ═══════════════════════════════════════════════════════════════════
-        //  MONITOR HEALTH CHECK
+        //  MONITOR / HEALTH CHECK
         // ═══════════════════════════════════════════════════════════════════
 
         private void HealthCheckTimer_Tick(object? sender, EventArgs e)
@@ -513,68 +636,53 @@ namespace OBSController
 
         private void UpdateMonitorIndicators()
         {
-            Dispatcher.Invoke(() =>
+            // Esegui i check in background per non bloccare l'UI (ping è bloccante)
+            Task.Run(() =>
             {
-                // Controlla lo stato di ciascun servizio/processo
                 bool ptzActive = IsCameraActive("192.168.1.50");
                 bool jwActive = IsProcessRunning("JWLibrary");
-                bool zoomActive = IsZoomMeetingActive(); // Controlla riunione attiva, non solo processo
+                bool zoomActive = IsZoomMeetingActive();
                 bool onlytActive = IsProcessRunning("OnlyT");
 
-                // Aggiorna gli indicatori con i loro stati specifici
-                UpdateMonitorColor(ChkPTZ, ptzActive);
-                UpdateMonitorColor(ChkJWLibrary, jwActive);
-                UpdateMonitorColor(ChkZoom, zoomActive);
-                UpdateMonitorColor(ChkOnlyt, onlytActive);
+                Dispatcher.Invoke(() =>
+                {
+                    UpdateMonitorColor(ChkPTZ, ptzActive);
+                    UpdateMonitorColor(ChkJWLibrary, jwActive);
+                    UpdateMonitorColor(ChkZoom, zoomActive);
+                    UpdateMonitorColor(ChkOnlyt, onlytActive);
+                });
             });
         }
 
-        /// <summary>Verifica se un processo è in esecuzione</summary>
         private bool IsProcessRunning(string processName)
         {
-            try
-            {
-                return Process.GetProcessesByName(processName).Length > 0;
-            }
-            catch
-            {
-                return false;
-            }
+            try { return Process.GetProcessesByName(processName).Length > 0; }
+            catch { return false; }
         }
 
-        /// <summary>Verifica se la telecamera è raggiungibile via ping</summary>
         private bool IsCameraActive(string ipAddress)
         {
             try
             {
-                using (var ping = new Ping())
-                {
-                    PingReply reply = ping.Send(ipAddress, 1000); // timeout 1 secondo
-                    return reply?.Status == IPStatus.Success;
-                }
+                using var ping = new Ping();
+                PingReply reply = ping.Send(ipAddress, 800);
+                return reply?.Status == IPStatus.Success;
             }
-            catch
-            {
-                return false;
-            }
+            catch { return false; }
         }
 
-        /// <summary>Verifica se c'è una riunione Zoom attiva</summary>
         private bool IsZoomMeetingActive()
         {
             try
             {
-                // Verifica se il processo Zoom è in esecuzione
                 var zoomProcesses = Process.GetProcessesByName("zoom");
                 if (zoomProcesses.Length == 0) return false;
 
-                // Cerca finestre Zoom che indicano una riunione attiva
                 foreach (var process in zoomProcesses)
                 {
                     try
                     {
                         string windowTitle = process.MainWindowTitle;
-                        // Indica riunione attiva: titolo contiene "Meeting" o numero ID riunione
                         if (!string.IsNullOrEmpty(windowTitle) &&
                             (windowTitle.Contains("Meeting", StringComparison.OrdinalIgnoreCase) ||
                              windowTitle.Contains("Zoom", StringComparison.OrdinalIgnoreCase)))
@@ -584,40 +692,25 @@ namespace OBSController
                     }
                     catch { }
                 }
-
                 return false;
             }
-            catch
-            {
-                return false;
-            }
+            catch { return false; }
         }
 
         private void UpdateMonitorColor(System.Windows.Controls.CheckBox checkbox, bool isActive)
         {
-            // Estrai il template e modifica il colore del cerchio
             var template = checkbox?.Template;
             if (template == null) return;
 
             var circle = template.FindName("CheckCircle", checkbox) as System.Windows.Shapes.Ellipse;
             if (circle != null)
             {
-                if (isActive)
-                {
-                    // 🟢 Verde = Attivo
-                    circle.Fill = new SolidColorBrush(Color.FromRgb(0x43, 0xA0, 0x47));
-                    circle.Stroke = null;
-                    circle.StrokeThickness = 0;
-                    circle.Opacity = 1.0;
-                }
-                else
-                {
-                    // 🔴 Rosso = Inattivo
-                    circle.Fill = new SolidColorBrush(Color.FromRgb(0xCC, 0x33, 0x33));
-                    circle.Stroke = null;
-                    circle.StrokeThickness = 0;
-                    circle.Opacity = 1.0;
-                }
+                circle.Fill = isActive
+                    ? new SolidColorBrush(Color.FromRgb(0x43, 0xA0, 0x47))
+                    : new SolidColorBrush(Color.FromRgb(0xCC, 0x33, 0x33));
+                circle.Stroke = null;
+                circle.StrokeThickness = 0;
+                circle.Opacity = 1.0;
             }
         }
 
@@ -634,28 +727,24 @@ namespace OBSController
         {
             try
             {
-                // Versione corrente dell'app
                 string currentVersion = System.Reflection.Assembly.GetExecutingAssembly()
                     .GetName().Version?.ToString() ?? "0.1.0.0";
 
-                // Verifica la versione più recente su GitHub API
-                using (var client = new System.Net.Http.HttpClient())
+                using var client = new System.Net.Http.HttpClient();
+                client.DefaultRequestHeaders.Add("User-Agent", "OBSController");
+                string apiUrl = "https://api.github.com/repos/Dade00/khmanager/releases/latest";
+
+                var response = await client.GetAsync(apiUrl);
+                if (response.IsSuccessStatusCode)
                 {
-                    client.DefaultRequestHeaders.Add("User-Agent", "OBSController");
-                    string apiUrl = "https://api.github.com/repos/Dade00/khmanager/releases/latest";
+                    string json = await response.Content.ReadAsStringAsync();
+                    var release = JObject.Parse(json);
+                    string latestVersion = release["tag_name"]?.ToString().TrimStart('v') ?? "0.1.0";
 
-                    var response = await client.GetAsync(apiUrl);
-                    if (response.IsSuccessStatusCode)
+                    if (IsNewerVersion(latestVersion, currentVersion))
                     {
-                        string json = await response.Content.ReadAsStringAsync();
-                        var release = JObject.Parse(json);
-                        string latestVersion = release["tag_name"]?.ToString().TrimStart('v') ?? "0.1.0";
-
-                        if (IsNewerVersion(latestVersion, currentVersion))
-                        {
-                            System.Diagnostics.Debug.WriteLine($"[Update] Nuova versione disponibile: {latestVersion}");
-                            UpdateStatus($"⬆ Nuova versione disponibile: {latestVersion}. Scarica da GitHub!");
-                        }
+                        System.Diagnostics.Debug.WriteLine($"[Update] Nuova versione disponibile: {latestVersion}");
+                        UpdateStatus($"⬆ Nuova versione disponibile: {latestVersion}. Scarica da GitHub!");
                     }
                 }
             }
@@ -674,19 +763,24 @@ namespace OBSController
 
         protected override void OnClosed(EventArgs e)
         {
-            _previewTimer?.Stop();
+            // Ferma tutti i timer
+            _fallbackPreviewTimer?.Stop();
             _vcamStatusTimer?.Stop();
             _healthCheckTimer?.Stop();
+            _reconnectTimer?.Stop();
 
-            // Spegni la videocamera virtuale prima di disconnettere
+            // Ferma VLC
+            StopVlcPreview();
+            _mediaPlayer?.Dispose();
+            _libVlc?.Dispose();
+
+            // Spegni la videocamera virtuale
             try
             {
                 if (_isVCamActive)
-                {
                     _obs.StopVirtualCam();
-                }
             }
-            catch { /* ignora errori */ }
+            catch { }
 
             _obs.Disconnect();
             base.OnClosed(e);
