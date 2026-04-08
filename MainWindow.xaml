@@ -202,12 +202,21 @@
                 <Grid>
                     <!-- VLC VideoView: usato quando Virtual Camera è attiva (smooth 30fps, zero stutter) -->
                     <vlc:VideoView x:Name="VlcVideoView" Visibility="Collapsed"/>
-                    <!-- Fallback Screenshot: usato quando VCam è spenta (1fps, monitoraggio scena) -->
-                    <Image Name="PreviewImage" Stretch="Uniform" Visibility="Collapsed"/>
-                    <!-- Placeholder: mostrato quando disconnesso -->
+                    <!-- Placeholder generico: disconnesso da OBS -->
                     <TextBlock Name="PreviewPlaceholder" Text="📹 Preview"
                                Foreground="#444444" FontSize="14" FontWeight="SemiBold"
                                VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                    <!-- Messaggio VCam spenta -->
+                    <StackPanel Name="VCamOffPlaceholder" Visibility="Collapsed"
+                                VerticalAlignment="Center" HorizontalAlignment="Center">
+                        <TextBlock Text="📷" FontSize="28" HorizontalAlignment="Center" Margin="0,0,0,8"/>
+                        <TextBlock Text="Webcam virtuale spenta"
+                                   Foreground="#666666" FontSize="13" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center"/>
+                        <TextBlock Text="Avviala per vedere la preview"
+                                   Foreground="#444444" FontSize="10"
+                                   HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                    </StackPanel>
                 </Grid>
             </Border>
         </Border>

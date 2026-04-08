@@ -2,14 +2,12 @@ using OBSController.Services;
 using System;
 using System.Windows;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Newtonsoft.Json.Linq;
 using System.IO;
 using System.Diagnostics;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Linq;
 using LibVLCSharp.Shared;
 
@@ -25,7 +23,6 @@ namespace OBSController
         private readonly OBSService _obs = new();
 
         // ─── Timers ────────────────────────────────────────────────────────────
-        private DispatcherTimer _fallbackPreviewTimer;  // screenshot 1fps quando VCam è spenta
         private DispatcherTimer _vcamStatusTimer;
         private DispatcherTimer _healthCheckTimer;
         private DispatcherTimer _reconnectTimer;
@@ -49,13 +46,6 @@ namespace OBSController
 
             // Verifica aggiornamenti all'avvio
             _ = CheckForUpdatesAsync();
-
-            // Timer screenshot fallback (1fps quando VCam è spenta)
-            _fallbackPreviewTimer = new DispatcherTimer
-            {
-                Interval = TimeSpan.FromMilliseconds(1000) // 1 fps - basta per monitorare la scena
-            };
-            _fallbackPreviewTimer.Tick += FallbackPreviewTimer_Tick;
 
             // Timer controllo stato virtual camera
             _vcamStatusTimer = new DispatcherTimer
@@ -128,32 +118,25 @@ namespace OBSController
 
             try
             {
-                // Ferma il fallback screenshot
-                _fallbackPreviewTimer.Stop();
-
-                // Apri la Virtual Camera OBS tramite DirectShow
                 var media = new Media(_libVlc, "dshow://", FromType.FromLocation);
                 media.AddOption(":dshow-vdev=OBS Virtual Camera");
-                media.AddOption(":dshow-adev=none");        // nessun audio
-                media.AddOption(":live-caching=50");        // latenza minima (50ms)
+                media.AddOption(":dshow-adev=none");
+                media.AddOption(":live-caching=50");
                 media.AddOption(":clock-jitter=0");
                 media.AddOption(":clock-synchro=0");
 
                 _mediaPlayer.Play(media);
                 _vlcPreviewActive = true;
 
-                // Mostra VideoView, nascondi gli altri
                 VlcVideoView.Visibility = Visibility.Visible;
-                PreviewImage.Visibility = Visibility.Collapsed;
                 PreviewPlaceholder.Visibility = Visibility.Collapsed;
+                VCamOffPlaceholder.Visibility = Visibility.Collapsed;
 
                 System.Diagnostics.Debug.WriteLine("[VLC] Preview avviato su OBS Virtual Camera");
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[VLC Preview Error] {ex.Message}");
-                // Fallback agli screenshot se VLC fallisce
-                StartFallbackPreview();
             }
         }
 
@@ -165,78 +148,13 @@ namespace OBSController
             {
                 _mediaPlayer?.Stop();
                 _vlcPreviewActive = false;
-
                 VlcVideoView.Visibility = Visibility.Collapsed;
-
                 System.Diagnostics.Debug.WriteLine("[VLC] Preview fermato");
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"[VLC Stop Error] {ex.Message}");
             }
-        }
-
-        // ═══════════════════════════════════════════════════════════════════
-        //  PREVIEW FALLBACK (Virtual Camera spenta → screenshot 1fps)
-        // ═══════════════════════════════════════════════════════════════════
-
-        private void StartFallbackPreview()
-        {
-            if (!_isConnected) return;
-
-            // Mostra Image fallback, nascondi VLC e placeholder
-            PreviewImage.Visibility = Visibility.Visible;
-            VlcVideoView.Visibility = Visibility.Collapsed;
-            PreviewPlaceholder.Visibility = Visibility.Collapsed;
-
-            _fallbackPreviewTimer.Start();
-        }
-
-        private void StopFallbackPreview()
-        {
-            _fallbackPreviewTimer.Stop();
-            PreviewImage.Visibility = Visibility.Collapsed;
-            PreviewImage.Source = null;
-        }
-
-        private void FallbackPreviewTimer_Tick(object? sender, EventArgs e)
-        {
-            if (!_isConnected) return;
-
-            // Screenshot a 1fps in background - non blocca l'UI
-            Task.Run(() =>
-            {
-                try
-                {
-                    string? dataUri = _obs.GetScreenshot(null, 410, 230);
-                    if (dataUri is null) return;
-
-                    string base64 = dataUri.Contains(",")
-                        ? dataUri[(dataUri.IndexOf(',') + 1)..]
-                        : dataUri;
-
-                    byte[] imageBytes = Convert.FromBase64String(base64);
-                    var bmp = new BitmapImage();
-                    bmp.BeginInit();
-                    bmp.StreamSource = new MemoryStream(imageBytes);
-                    bmp.CacheOption = BitmapCacheOption.OnLoad;
-                    bmp.CreateOptions = BitmapCreateOptions.None;
-                    bmp.EndInit();
-                    bmp.Freeze();
-
-                    Dispatcher.Invoke(() =>
-                    {
-                        if (!_vlcPreviewActive) // Solo se VLC non è attivo
-                        {
-                            PreviewImage.Source = bmp;
-                        }
-                    });
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[Fallback Preview] {ex.Message}");
-                }
-            });
         }
 
         // ═══════════════════════════════════════════════════════════════════
@@ -458,11 +376,9 @@ namespace OBSController
                 StatusText.Text = "Disconnesso";
                 UpdateStatus("Disconnesso");
 
-                // Ferma tutti i preview
+                // Ferma preview VLC e mostra placeholder generico
                 StopVlcPreview();
-                StopFallbackPreview();
-
-                // Mostra placeholder
+                VCamOffPlaceholder.Visibility = Visibility.Collapsed;
                 PreviewPlaceholder.Visibility = Visibility.Visible;
 
                 _vcamStatusTimer.Stop();
@@ -526,22 +442,20 @@ namespace OBSController
             if (isActive && !wasActive)
             {
                 // VCam appena attivata → avvia VLC (smooth 30fps)
-                StopFallbackPreview();
                 StartVlcPreview();
             }
             else if (!isActive && wasActive)
             {
-                // VCam appena spenta → passa a fallback screenshot 1fps
+                // VCam appena spenta → mostra messaggio "spenta"
                 StopVlcPreview();
-                if (_isConnected)
-                    StartFallbackPreview();
-                else
-                    PreviewPlaceholder.Visibility = Visibility.Visible;
+                VCamOffPlaceholder.Visibility = Visibility.Visible;
+                PreviewPlaceholder.Visibility = Visibility.Collapsed;
             }
-            else if (!isActive && _isConnected && !_fallbackPreviewTimer.IsEnabled && !_vlcPreviewActive)
+            else if (!isActive && _isConnected && !_vlcPreviewActive)
             {
-                // VCam spenta al primo check dopo connessione → avvia fallback
-                StartFallbackPreview();
+                // VCam spenta al primo check dopo connessione → mostra messaggio
+                VCamOffPlaceholder.Visibility = Visibility.Visible;
+                PreviewPlaceholder.Visibility = Visibility.Collapsed;
             }
 
             // Aggiorna UI VCam
@@ -764,7 +678,6 @@ namespace OBSController
         protected override void OnClosed(EventArgs e)
         {
             // Ferma tutti i timer
-            _fallbackPreviewTimer?.Stop();
             _vcamStatusTimer?.Stop();
             _healthCheckTimer?.Stop();
             _reconnectTimer?.Stop();
