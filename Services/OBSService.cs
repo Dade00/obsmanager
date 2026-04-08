@@ -21,6 +21,7 @@ namespace OBSController.Services
         public event EventHandler? Disconnected;
         public event EventHandler<string>? SceneChanged;
         public event EventHandler<string>? Error;
+        public event EventHandler<string>? Debug;  // Per tracciare la connessione
 
         // ─── Stato ───────────────────────────────────────────────────────────
         public bool IsConnected => _obs.IsConnected;
@@ -46,10 +47,13 @@ namespace OBSController.Services
         {
             try
             {
+                Debug?.Invoke(this, $"[Connect] Tentativo ws://{ip}:{port}");
                 _obs.ConnectAsync($"ws://{ip}:{port}", password);
+                Debug?.Invoke(this, "[Connect] ConnectAsync chiamato");
             }
             catch (Exception ex)
             {
+                Debug?.Invoke(this, $"[Connect Exception] {ex.GetType().Name}: {ex.Message}");
                 Error?.Invoke(this, $"Connessione fallita: {ex.Message}");
             }
         }
@@ -111,8 +115,24 @@ namespace OBSController.Services
             try
             {
                 var status = _obs.GetVirtualCamStatus();
-                // La libreria ritorna un VirtualCamStatus enum o similare
-                return status != null && status.ToString() != "Stopped";
+                // Controlla se la virtual camera è attiva
+                // Prova le proprietà comuni: IsActive, Active, Enabled
+                if (status == null) return false;
+
+                var statusType = status.GetType();
+
+                // Cerca la proprietà giusta
+                var activeProperty = statusType.GetProperty("IsActive")
+                    ?? statusType.GetProperty("Active")
+                    ?? statusType.GetProperty("Enabled");
+
+                if (activeProperty != null)
+                {
+                    return (bool)activeProperty.GetValue(status);
+                }
+
+                // Fallback: controlla ToString
+                return status.ToString() != "Stopped";
             }
             catch
             {

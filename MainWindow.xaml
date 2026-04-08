@@ -2,9 +2,9 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="OBS Controller"
-        Height="500" Width="500"
-        MinHeight="500" MinWidth="500"
-        MaxHeight="500" MaxWidth="500"
+        Height="600" Width="550"
+        MinHeight="600" MinWidth="550"
+        MaxHeight="600" MaxWidth="550"
         Background="#121212"
         Foreground="#e8e8e8"
         FontFamily="Segoe UI"
@@ -40,6 +40,22 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <!-- Stile bottone VCam Toggle -->
+        <ControlTemplate x:Key="ButtonTemplate" TargetType="Button">
+            <Border Background="{TemplateBinding Background}" CornerRadius="3"
+                    Padding="{TemplateBinding Padding}">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Opacity" Value="0.85"/>
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Opacity" Value="0.7"/>
+                </Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
 
         <!-- FancyCheckBox Base -->
         <Style x:Key="FancyCheckBox" TargetType="CheckBox">
@@ -145,10 +161,11 @@
         </Style>
     </Window.Resources>
 
-    <!-- LAYOUT PRINCIPALE - COMPATTO E VELOCE -->
+    <!-- LAYOUT PRINCIPALE: Preview top, Controls bottom -->
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="45"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
@@ -176,89 +193,112 @@
             </Grid>
         </Border>
 
-        <!-- MAIN CONTENT: Left Panel (Scenes + Status) | Right Panel (Preview) -->
-        <Grid Grid.Row="1">
+        <!-- PREVIEW SECTION: Center preview only -->
+        <Border Grid.Row="1" Background="#0a0a0a" Padding="12,10,12,10" HorizontalAlignment="Center">
+            <!-- Preview Border - 16:9 aspect ratio -->
+            <Border Background="#000000" BorderBrush="#333333" BorderThickness="1"
+                    Width="410" Height="230" CornerRadius="4">
+                <Grid>
+                    <Image Name="PreviewImage" Stretch="UniformToFill"/>
+                    <TextBlock Name="PreviewPlaceholder" Text="📹 Preview"
+                               Foreground="#444444" FontSize="14" FontWeight="SemiBold"
+                               VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                </Grid>
+            </Border>
+        </Border>
+
+        <!-- BOTTOM PANEL: Scenes left + Monitor right -->
+        <Grid Grid.Row="2" Background="#0a0a0a">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="160"/>
+                <ColumnDefinition Width="2*"/>
                 <ColumnDefinition Width="1"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="1*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- LEFT PANEL: Scene Buttons + Status Checks -->
-            <StackPanel Grid.Column="0" Background="#0a0a0a" Margin="12,12,0,12" VerticalAlignment="Top">
+            <!-- LEFT: SCENE BUTTONS (2x2 grid) + Virtual Cam Status -->
+            <StackPanel Grid.Column="0" Margin="14,12,6,14" VerticalAlignment="Top">
 
                 <!-- SCENE BUTTONS -->
-                <TextBlock Text="SCENE" Foreground="#666666" FontSize="9" FontWeight="Bold" Margin="2,0,0,2" Opacity="0.8"/>
-                
-                <Button Name="BtnScene4" Content="📺 Multimedia" Style="{StaticResource SceneButton}"
-                        Tag="Multimedia" Click="BtnScene_Click"/>
-                <Button Name="BtnScene1" Content="🎤 Centrale" Style="{StaticResource SceneButton}"
-                        Tag="Centrale" Click="BtnScene_Click"/>
-                <Button Name="BtnScene2" Content="👥 Doppio" Style="{StaticResource SceneButton}"
-                        Tag="Doppio" Click="BtnScene_Click"/>
-                <Button Name="BtnScene3" Content="📊 Dimostrazione" Style="{StaticResource SceneButton}"
-                        Tag="Dimostrazione" Click="BtnScene_Click"/>
+                <TextBlock Text="SCENE" Foreground="#666666" FontSize="10" FontWeight="Bold" Margin="0,0,0,8" Opacity="0.8"/>
 
-                <Separator Background="#222222" Margin="2,4"/>
+                <Grid Margin="0,0,0,14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
 
-                <!-- STATUS CHECKS -->
-                <TextBlock Text="MONITOR" Foreground="#666666" FontSize="9" FontWeight="Bold" Margin="2,0,0,2" Opacity="0.8"/>
+                    <Button Grid.Row="0" Grid.Column="0" Name="BtnScene4" Content="📺 Multimedia"
+                            Style="{StaticResource SceneButton}" Tag="Multimedia" Click="BtnScene_Click" Margin="0,0,3,3"/>
+                    <Button Grid.Row="0" Grid.Column="1" Name="BtnScene1" Content="🎤 Centrale"
+                            Style="{StaticResource SceneButton}" Tag="Centrale" Click="BtnScene_Click" Margin="3,0,0,3"/>
+                    <Button Grid.Row="1" Grid.Column="0" Name="BtnScene2" Content="👥 Doppio"
+                            Style="{StaticResource SceneButton}" Tag="Doppio" Click="BtnScene_Click" Margin="0,3,3,0"/>
+                    <Button Grid.Row="1" Grid.Column="1" Name="BtnScene3" Content="📊 Dimostrazione"
+                            Style="{StaticResource SceneButton}" Tag="Dimostrazione" Click="BtnScene_Click" Margin="3,3,0,0"/>
+                </Grid>
 
-                <CheckBox Name="ChkPTZ" IsEnabled="False" Style="{StaticResource CheckPTZ}">
-                    <TextBlock Text="Telecamera PTZ" Foreground="#e8e8e8"/>
-                </CheckBox>
+                <!-- Separator -->
+                <Separator Background="#222222" Margin="0,0,0,12"/>
 
-                <CheckBox Name="ChkJWLibrary" IsEnabled="False" Style="{StaticResource CheckJWLibrary}">
-                    <TextBlock Text="JW Library" Foreground="#e8e8e8"/>
-                </CheckBox>
+                <!-- VIRTUAL CAMERA CONTROL - PROMINENT -->
+                <TextBlock Text="WEBCAM" Foreground="#666666" FontSize="10" FontWeight="Bold" Margin="0,0,0,8" Opacity="0.8"/>
 
-                <CheckBox Name="ChkZoom" IsEnabled="False" Style="{StaticResource CheckZoom}">
-                    <TextBlock Text="Zoom" Foreground="#e8e8e8"/>
-                </CheckBox>
+                <!-- VCam Status Card -->
+                <Border Background="#1a1a1a" BorderBrush="#333333" BorderThickness="1"
+                        Padding="10,10" CornerRadius="4" Margin="0,0,0,8">
+                    <StackPanel>
+                        <!-- Status Indicator -->
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <Ellipse Name="VCamStatusDot" Width="12" Height="12" Fill="#cc3333" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                            <TextBlock Name="VCamStatusText" Text="Spenta" Foreground="#FF6B35" FontSize="12" FontWeight="SemiBold"/>
+                        </StackPanel>
 
-                <CheckBox Name="ChkOnlyt" IsEnabled="False" Style="{StaticResource CheckOnlyt}">
-                    <TextBlock Text="Onlyt" Foreground="#e8e8e8"/>
-                </CheckBox>
+                        <!-- Action Button - Only shows when OFF -->
+                        <Button Name="BtnToggleVCam" Content="▶ Avvia" Foreground="white" FontSize="12"
+                                FontWeight="SemiBold" Background="#43A047" BorderThickness="0" 
+                                Padding="0,10" Cursor="Hand" Click="BtnToggleVCam_Click"
+                                Template="{DynamicResource ButtonTemplate}" Visibility="Visible"/>
 
+                        <!-- Status message when ON -->
+                        <TextBlock Name="VCamActiveMsg" Text="✓ Webcam avviata" Foreground="#43A047" 
+                                   FontSize="12" FontWeight="SemiBold" Margin="0,0,0,0" TextAlignment="Center"
+                                   Visibility="Collapsed"/>
+
+                        <!-- Inline Warning - Only shows when OFF -->
+                        <TextBlock Name="VCamWarning" Text="⚠ Non avviata" Foreground="#FF6B35" 
+                                   FontSize="10" Margin="0,8,0,0" TextAlignment="Center"
+                                   Visibility="Visible"/>
+                    </StackPanel>
+                </Border>
             </StackPanel>
 
             <!-- DIVIDER -->
-            <Border Grid.Column="1" Background="#222222" Margin="0,10"/>
+            <Border Grid.Column="1" Background="#222222" Margin="0,8"/>
 
-            <!-- RIGHT PANEL: Preview Webcam Virtuale -->
-            <Grid Grid.Column="2" Background="#0a0a0a" Margin="12,12">
-                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                    
-                    <!-- Preview Border -->
-                    <Border Background="#000000" BorderBrush="#333333" BorderThickness="1"
-                            Width="270" Height="270" CornerRadius="4" 
-                            HorizontalAlignment="Center" VerticalAlignment="Center">
-                        <Grid>
-                            <Image Name="PreviewImage" Stretch="UniformToFill"/>
-                            <TextBlock Name="PreviewPlaceholder" Text="📹 Preview"
-                                       Foreground="#444444" FontSize="12" FontWeight="SemiBold"
-                                       VerticalAlignment="Center" HorizontalAlignment="Center"/>
-                        </Grid>
-                    </Border>
+            <!-- RIGHT: MONITOR INDICATORS -->
+            <StackPanel Grid.Column="2" Margin="6,12,12,14" VerticalAlignment="Top">
+                <TextBlock Text="MONITOR" Foreground="#666666" FontSize="10" FontWeight="Bold" Margin="0,0,0,8" Opacity="0.8"/>
 
-                    <!-- Virtual Camera Status Indicator -->
-                    <Border Background="#1a1a1a" BorderBrush="#333333" BorderThickness="1" 
-                            Padding="10,8" CornerRadius="3" HorizontalAlignment="Center">
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <Ellipse Name="VCamStatusDot" Width="9" Height="9" Fill="#cc3333"/>
-                            <TextBlock Name="VCamStatusText" Text="Webcam: Spenta" Foreground="#e8e8e8" FontSize="11" FontWeight="SemiBold"/>
-                        </StackPanel>
-                    </Border>
+                <CheckBox Name="ChkPTZ" IsEnabled="False" Style="{StaticResource CheckPTZ}" Margin="0,4">
+                    <TextBlock Text="Telecamera" Foreground="#e8e8e8" FontSize="10"/>
+                </CheckBox>
 
-                    <!-- Warning Overlay -->
-                    <Border Name="VCamWarning" Background="#FF6B35" Padding="8,6" CornerRadius="3" 
-                            HorizontalAlignment="Center" Visibility="Visible">
-                        <TextBlock Text="⚠ Webcam non avviata"
-                                   Foreground="white" FontSize="10" FontWeight="SemiBold"
-                                   TextAlignment="Center" TextWrapping="Wrap"/>
-                    </Border>
-                </StackPanel>
-            </Grid>
+                <CheckBox Name="ChkJWLibrary" IsEnabled="False" Style="{StaticResource CheckJWLibrary}" Margin="0,4">
+                    <TextBlock Text="JW Library" Foreground="#e8e8e8" FontSize="10"/>
+                </CheckBox>
+
+                <CheckBox Name="ChkZoom" IsEnabled="False" Style="{StaticResource CheckZoom}" Margin="0,4">
+                    <TextBlock Text="Zoom" Foreground="#e8e8e8" FontSize="10"/>
+                </CheckBox>
+
+                <CheckBox Name="ChkOnlyt" IsEnabled="False" Style="{StaticResource CheckOnlyt}" Margin="0,4">
+                    <TextBlock Text="Onlyt" Foreground="#e8e8e8" FontSize="10"/>
+                </CheckBox>
+            </StackPanel>
 
         </Grid>
 
