@@ -9,7 +9,8 @@ using System.Diagnostics;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Linq;
-using LibVLCSharp.Shared;
+using FlashCap;
+using System.Windows.Media.Imaging;
 
 namespace OBSController
 {
@@ -36,10 +37,10 @@ namespace OBSController
         private int _lastOBSPort = 4455;
         private string _lastOBSPassword = "";
 
-        // ─── LibVLC ────────────────────────────────────────────────────────────
-        private LibVLC? _libVlc;
-        private LibVLCSharp.Shared.MediaPlayer? _mediaPlayer;
-        private bool _vlcPreviewActive = false;
+        // ─── FlashCap (preview Virtual Camera) ────────────────────────────────
+        private CaptureDevice? _captureDevice;
+        private DateTime _lastPreviewFrame = DateTime.MinValue;
+        private const int PREVIEW_INTERVAL_MS = 50; // max ~20fps
 
         public MainWindow()
         {
@@ -71,8 +72,7 @@ namespace OBSController
             _reconnectTimer.Tick += ReconnectTimer_Tick;
             _reconnectTimer.Start();
 
-            // Inizializza LibVLC dopo il caricamento della finestra
-            Loaded += MainWindow_Loaded;
+            Loaded += (_, _) => LoadConfigurationDefaults();
 
             // Eventi OBS
             _obs.Connected += OnOBSConnected;
@@ -82,79 +82,121 @@ namespace OBSController
         }
 
         // ═══════════════════════════════════════════════════════════════════
-        //  INIT LIBVLC
+        //  PREVIEW — FlashCap (Virtual Camera OBS → Image WPF, ~20fps)
         // ═══════════════════════════════════════════════════════════════════
 
-        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+        private async void StartVlcPreview()   // nome mantenuto per non cambiare i call-site
         {
+            if (_captureDevice != null) return;
+
             try
             {
-                // Inizializza LibVLC (usa i binari del pacchetto NuGet VideoLAN.LibVLC.Windows)
-                _libVlc = new LibVLC(enableDebugLogs: false);
-                _mediaPlayer = new LibVLCSharp.Shared.MediaPlayer(_libVlc);
+                // Enumera i dispositivi DirectShow (sync)
+                var descriptors = new CaptureDevices().EnumerateDescriptors().ToList();
 
-                // Collega il MediaPlayer al VideoView WPF
-                VlcVideoView.MediaPlayer = _mediaPlayer;
+                // Cerca la Virtual Camera di OBS
+                var obsDevice = descriptors.FirstOrDefault(d =>
+                    d.Name.Contains("OBS", StringComparison.OrdinalIgnoreCase) &&
+                    d.Name.Contains("Virtual", StringComparison.OrdinalIgnoreCase))
+                    ?? descriptors.FirstOrDefault(d =>
+                    d.Name.Contains("OBS", StringComparison.OrdinalIgnoreCase));
 
-                System.Diagnostics.Debug.WriteLine("[VLC] LibVLC inizializzato correttamente");
+                if (obsDevice == null || obsDevice.Characteristics.Length == 0)
+                {
+                    // Log per debug
+                    System.Diagnostics.Debug.WriteLine("[Preview] OBS Virtual Camera non trovata. Dispositivi disponibili:");
+                    foreach (var d in descriptors)
+                        System.Diagnostics.Debug.WriteLine($"  - {d.Name}");
+                    return;
+                }
+
+                System.Diagnostics.Debug.WriteLine($"[Preview] Trovata: {obsDevice.Name}");
+
+                // Preferisci MJPEG (JPEG diretto, decodifica rapida), poi qualsiasi formato
+                var characteristic = obsDevice.Characteristics
+                    .Where(c => c.PixelFormat == FlashCap.PixelFormats.JPEG)
+                    .OrderByDescending(c => c.Width)
+                    .FirstOrDefault()
+                    ?? obsDevice.Characteristics
+                    .OrderByDescending(c => c.Width)
+                    .FirstOrDefault();
+
+                if (characteristic == null) return;
+
+                System.Diagnostics.Debug.WriteLine($"[Preview] {characteristic.Width}x{characteristic.Height} {characteristic.PixelFormat} @{characteristic.FramesPerSecond}fps");
+
+                // Apri dispositivo con callback async per i frame
+                _captureDevice = await obsDevice.OpenAsync(characteristic, OnFrameArrived);
+                await _captureDevice.StartAsync();
+
+                Dispatcher.Invoke(() =>
+                {
+                    PreviewImage.Visibility = Visibility.Visible;
+                    PreviewPlaceholder.Visibility = Visibility.Collapsed;
+                    VCamOffPlaceholder.Visibility = Visibility.Collapsed;
+                });
+
+                System.Diagnostics.Debug.WriteLine("[Preview] Cattura avviata");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[VLC Init Error] {ex.Message}");
-                // Se VLC non disponibile, funzionerà solo con fallback screenshot
+                System.Diagnostics.Debug.WriteLine($"[Preview Error] {ex.Message}");
             }
-
-            // Avvia la configurazione dopo l'init VLC
-            LoadConfigurationDefaults();
         }
 
-        // ═══════════════════════════════════════════════════════════════════
-        //  PREVIEW VLC (Virtual Camera attiva → 30fps fluido)
-        // ═══════════════════════════════════════════════════════════════════
-
-        private void StartVlcPreview()
+        private async Task OnFrameArrived(PixelBufferScope bufferScope)
         {
-            if (_vlcPreviewActive) return;
-            if (_mediaPlayer == null || _libVlc == null) return;
+            // Throttle a ~20fps per non sovraccaricare il thread di rendering WPF
+            var now = DateTime.UtcNow;
+            if ((now - _lastPreviewFrame).TotalMilliseconds < PREVIEW_INTERVAL_MS) return;
+            _lastPreviewFrame = now;
 
             try
             {
-                var media = new Media(_libVlc, "dshow://", FromType.FromLocation);
-                media.AddOption(":dshow-vdev=OBS Virtual Camera");
-                media.AddOption(":dshow-adev=none");
-                media.AddOption(":live-caching=50");
-                media.AddOption(":clock-jitter=0");
-                media.AddOption(":clock-synchro=0");
+                // CopyImage() è sincrono — restituisce i byte nel formato del dispositivo
+                byte[] imageData = bufferScope.Buffer.CopyImage();
 
-                _mediaPlayer.Play(media);
-                _vlcPreviewActive = true;
+                // Crea BitmapImage (frozen = thread-safe per WPF)
+                var bmp = new BitmapImage();
+                bmp.BeginInit();
+                bmp.CacheOption = BitmapCacheOption.OnLoad;
+                bmp.StreamSource = new MemoryStream(imageData);
+                bmp.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
+                bmp.EndInit();
+                bmp.Freeze();
 
-                VlcVideoView.Visibility = Visibility.Visible;
-                PreviewPlaceholder.Visibility = Visibility.Collapsed;
-                VCamOffPlaceholder.Visibility = Visibility.Collapsed;
-
-                System.Diagnostics.Debug.WriteLine("[VLC] Preview avviato su OBS Virtual Camera");
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    PreviewImage.Source = bmp;
+                }, System.Windows.Threading.DispatcherPriority.Render);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[VLC Preview Error] {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[Frame] {ex.Message}");
             }
         }
 
-        private void StopVlcPreview()
+        private async void StopVlcPreview()   // nome mantenuto per non cambiare tutti i call-site
         {
-            if (!_vlcPreviewActive) return;
+            if (_captureDevice == null) return;
 
             try
             {
-                _mediaPlayer?.Stop();
-                _vlcPreviewActive = false;
-                VlcVideoView.Visibility = Visibility.Collapsed;
-                System.Diagnostics.Debug.WriteLine("[VLC] Preview fermato");
+                await _captureDevice.StopAsync();
+                _captureDevice.Dispose();
+                _captureDevice = null;
+
+                Dispatcher.Invoke(() =>
+                {
+                    PreviewImage.Source = null;
+                    PreviewImage.Visibility = Visibility.Collapsed;
+                });
+
+                System.Diagnostics.Debug.WriteLine("[Preview] Cattura fermata");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[VLC Stop Error] {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[Preview Stop] {ex.Message}");
             }
         }
 
@@ -415,7 +457,7 @@ namespace OBSController
                 VCamOffPlaceholder.Visibility = Visibility.Visible;
                 PreviewPlaceholder.Visibility = Visibility.Collapsed;
             }
-            else if (!isActive && _isConnected && !_vlcPreviewActive)
+            else if (!isActive && _isConnected && _captureDevice == null)
             {
                 // VCam spenta al primo check dopo connessione → mostra messaggio
                 VCamOffPlaceholder.Visibility = Visibility.Visible;
@@ -657,10 +699,12 @@ namespace OBSController
             _healthCheckTimer?.Stop();
             _reconnectTimer?.Stop();
 
-            // Ferma VLC
-            StopVlcPreview();
-            _mediaPlayer?.Dispose();
-            _libVlc?.Dispose();
+            // Ferma preview FlashCap
+            if (_captureDevice != null)
+            {
+                try { _captureDevice.Dispose(); } catch { }
+                _captureDevice = null;
+            }
 
             // Spegni la videocamera virtuale
             try

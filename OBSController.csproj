@@ -18,9 +18,8 @@
     <PackageReference Include="obs-websocket-dotnet" Version="5.0.1" />
     <!-- JSON per SetInputSettings -->
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <!-- LibVLC per preview video fluido (zero stutter UI, dshow virtual camera) -->
-    <PackageReference Include="LibVLCSharp.WPF" Version="3.9.6" />
-    <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.21" />
+    <!-- FlashCap per preview video fluido (capture da Virtual Camera, puro .NET) -->
+    <PackageReference Include="FlashCap" Version="1.11.0" />
   </ItemGroup>
 
   <!-- Copia appsettings.json nella directory di output -->
